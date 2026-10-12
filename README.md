@@ -61,12 +61,11 @@ Doing a quick Google search for "Medion MD 30010 FULL UPDATE EN" you'll find a z
 
 Open a ticket in the Issues sections, I might keep working on (un)paking the Medion SW that works on my TV, the aim? Custom Apps and debloating as much as possible for the TV to get its best (remaing) life time.
 
-## Warranty
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-
 ## Disclaimer
-
 All the information was freely accessible via Internet (Search Engines), some LLM help and a couple of hours spent on it, ~10 hours.
+
+## Warranty
+THIS GIT REPOSITORY AND IT'S CONTENT IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
 
 ## Appreciations
 Thanks to [DeepSeek](https://github.com/deepseek-ai) for being one of the known free-to-use LLMs that helped me during this reverse engineering's research. Such a pitty I have reached the limitation for the context window on the chat. 
