@@ -19,6 +19,9 @@ Not to mention the HDMI ports sometimes works sometimes doesn't.
 - [RESEARCH.MD](RESEARCH.MD) A full overview with the finding during my investigation (hint: 🔑 gold mine )
 - 🚀 Downgrading info, see bellow! 
 
+## Tools
+- [Vestel Profile Toolbox (TommyData)](https://www.bekozap.com/hacking-the-software-of-vestel-tv-7/) - tested and working, some hex values are not displayed, is an old app and my TV was released on 2019. I bet if I do some digging I could update the dictionary.ini to display new values.
+- [Hosbulduk-Profil-Analiz](https://github.com/Hosbulduk/Hosbulduk-Profil-Analiz/) - not tested, contains NEW HEX values, seems promissing!
 
 ## Breakthrow - Downgrade!
 
@@ -83,6 +86,9 @@ Thanks to [DeepSeek](https://github.com/deepseek-ai) for being one of the known 
 - https://www.scribd.com/document/992536354/Mainboard-17MB230-PDF
 - https://www.elektroda.com/qa,50hl7590-vestel-17mb170-firmware-panel-emmc.html
 - https://www.manualslib.com/manual/3391806/Vestel-Mb230-Idtv.html?page=35
+- https://www.elforum.info/topic/136160-profile-vestel-lcd-de-reparare-17mbxx/#comments
+
+I've tried creating accounts in some of the links above but either "new accounts" are disabled nor willing to pay any premium fee.
 
 If you found this helpful consider buying me a coffee ☕
  ![GitHub Sponsor](https://img.shields.io/github/sponsors/nirodg?label=Sponsor&logo=GitHub)
