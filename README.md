@@ -17,6 +17,7 @@ Not to mention the HDMI ports sometimes works sometimes doesn't.
 ## What you'll get 
 - [mb230-inspector](mb230_inspector.py). A Python app to help you analyze the dump files extracted from your MB230 TV. **Remember, might now work  and/or contain bugs**
 - [RESEARCH.MD](RESEARCH.MD) A full overview with the finding during my investigation (hint: 🔑 gold mine )
+- 🚀 Downgrading info, see bellow! 
 
 
 ## Breakthrow - Downgrade!

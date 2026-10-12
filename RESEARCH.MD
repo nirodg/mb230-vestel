@@ -4,7 +4,6 @@
 **Firmware:** Kylo `V.0.51.52.3` (SVN 379809, build 2025-11-25)
 **Panel:** `50_VESQNDTN41J2D_UHD_D_XDF0_V_230_XX` (VES500QNDT-N41-2D, Inolux, 3840×2160)
 **Method:** Non-invasive USB dump via service menu
-**Author:** [your name]
 **Date:** 2026-10
 
 ---
