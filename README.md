@@ -53,7 +53,7 @@ I can honestly say is worth it, the TV moves way faster compared with the previo
 
 - Using the Vestel Toolbok (the I should dump the new fwprofile and restore some values from my original FW.
 - I could compare new and old fwprofile and see what values changed. Pissibly changing the App Store do a diff. vendor.
-- Anything you could thing it be of use please create a ticket
+- Anything you could thing it be of use please create a ticket.
 
 #### How to get the SW 
 Doing a quick Google search for "Medion MD 30010 FULL UPDATE EN" you'll find a zip file with 218.2 MB
