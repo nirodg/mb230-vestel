@@ -15,7 +15,7 @@ My TV has passed the TV's hours lifetime, I have not received any update for the
 Not to mention the HDMI ports sometimes works sometimes doesn't.
 
 ## What you'll get 
-- [mb230-inspector](mb230_inspector.py). A Python app to help you analyze the dump files extracted from your MB230 TV. **Remember, might now work  and/or contain bugs**
+- [mb230-inspector](mb230_inspector.py). A Python app to help you analyze the dump files extracted from your MB230 TV. **Remember, might not work and/or contain bugs**
 - [RESEARCH.MD](RESEARCH.MD) A full overview with the finding during my investigation (hint: 🔑 gold mine )
 - 🚀 Downgrading info, see bellow! 
 
@@ -41,10 +41,19 @@ I can honestly say is worth it, the TV moves way faster compared with the previo
 - Encrypted channels with the Smart CAM Card
 - Portal (apps)
 - Any available OS language (i18n)
+- HDMI ports are working now!
 
 ### Doesn't work
 - Remote controll mapping: Youtube Button
 - Less Portal apps, only includes the German version (as it comes with the German FW)
+- It enabled a 4th HDMI port the TV doesn't have and it some "crashes"/overlaps with the Plex APP.
+- with Enhanced HDMI and my MiBox4 I sometimes loose video input (same with the original FW)
+
+### TODOs
+
+- Using the Vestel Toolbok (the I should dump the new fwprofile and restore some values from my original FW.
+- I could compare new and old fwprofile and see what values changed. Pissibly changing the App Store do a diff. vendor.
+- Anything you could thing it be of use please create a ticket
 
 #### How to get the SW 
 Doing a quick Google search for "Medion MD 30010 FULL UPDATE EN" you'll find a zip file with 218.2 MB
