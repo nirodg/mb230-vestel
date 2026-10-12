@@ -15,7 +15,7 @@ My TV has passed the TV's hours lifetime, I have not received any update for the
 Not to mention the HDMI ports sometimes works sometimes doesn't.
 
 ## What you'll get 
-- [mb230-inspector](mb230-inspector/). A Python app to help you analyze the dump files extracted from your MB230 TV. **Remember, might now work  and/or contain bugs**
+- [mb230-inspector](mb230_inspector.py). A Python app to help you analyze the dump files extracted from your MB230 TV. **Remember, might now work  and/or contain bugs**
 - [RESEARCH.MD](RESEARCH.MD) A full overview with the finding during my investigation (hint: 🔑 gold mine )
 
 
@@ -67,6 +67,10 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ## Appreciations
 Thanks to DeepSeek for being one of the known free-to-use LLMs that helped me during this reverse engineering's research.
 
+## Useful links
+- https://www.scribd.com/document/992536354/Mainboard-17MB230-PDF
+- https://www.elektroda.com/qa,50hl7590-vestel-17mb170-firmware-panel-emmc.html
+- https://www.manualslib.com/manual/3391806/Vestel-Mb230-Idtv.html?page=35
 
 If you found this helpful consider buying me a coffee ☕
  ![GitHub Sponsor](https://img.shields.io/github/sponsors/nirodg?label=Sponsor&logo=GitHub)
