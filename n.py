@@ -1,0 +1,3499 @@
+#!/usr/bin/env python3
+
+# =====================================================================================
+# NTKFWinfo - python script for working with Novatek firmware binary files
+# Show full FW info, allow extract/add/delete/replace/uncompress/compress partitions
+# and fixCRC after modifications.
+#
+# Copyright © 2026 Dex9999(4pda.to) aka Dex aka EgorKin(GitHub, etc.)
+# =====================================================================================
+
+
+# I suggest use pypy3 (apt install pypy3) for speed-up LZ77 compression, not python3
+
+
+# V2.0 - improve parsing, now support Viofo A139 and 70Mai A500S firmwares
+# V2.1 - add LZ77 unpacker
+# V3.0 - add get info about partition names from fdt(dtb) partition
+# V3.1 - add MODELEXT INFO partition support
+# V3.2 - initial support old firmware format (BCL1 starting partition + NVTPACK_FW_HDR)
+# V3.3 - add optional start offset for -u command (uncompress partition); add -x ALL option, also start offset for -x and -u now optional (do not need set it to 0)
+# V3.4 - add ZLIB uncompress support
+# V3.5 - add LZMA uncompress support
+# V3.6 - for -u command: if start offset not defined or 0 - auto skip CKSM header size (0x40 bytes) for CKSM partition
+# V3.7 - parse UBI volume names
+# V3.8 - for -u command: if start offset not defined - auto skip CKSM header size (0x40 bytes) for CKSM partition; if offset set to 0 - force use 0 (does not use auto skip)
+# V3.9 - extract files from UBI via -u command using ubireader
+# V4.0 - add -c command: compress partition by ID and merge to firmware file
+# V4.1 - support change partition size for -c command
+# V4.2 - add support CKSM<--BCL1 and BCL1 partitions for -c command
+# V4.3 - add support SPARSE partitions for -u and -c command
+# V4.4 - speed up LZ77 uncompress
+# V4.5 - add LZ compression for -c command; now support -u & -c for old firmware format; another temp folders struct for SPARSE partitions
+# V4.6 - show progress bar and elapsed time for LZ77 compression process
+# V4.7 - BCL1 partitions CRC support
+# V4.8 - add -o option for define working dir for output partitions
+# V4.9 - add banner; pre-release version
+# V5.0 - first public release
+# V5.1 - add FDT(DTB) partition uncompress/compress support
+# V5.2 - BCL1 LZ77 compatibility improvements, BCL1 LZMA DictionarySize support WIP
+# V5.3 - fix -x ALL command (all partitions extraction)
+# V5.4 - fix additional characters in filenames support
+# V5.5 - add -udtb and -cdtb for convert DTB file to DTS file for easy view/edit application.dtb file with sensor settings and vice versa
+# V5.6 - print some additional info while unpack BCL1 partitions
+# V5.7 - make_ext4 is not need anymore and deprecated in modern distributives, move to img2simg
+# V5.8 - Fix CRC for uncompressed data partition before compress it to BCL1 partition if it is required
+# V5.9 - fix datetime.fromtimestamp() calls in actual Python versions
+# V6.0 - unassign uboot partition findings from partID=3. Add 'ARM Trusted Firmware-A' partition support
+# V6.1 - initial support of 'Multi-File Images' type for uImage partitions
+# V6.2 - for ARM64 rootfs partition only (part name "rootfs" is hardcoded now): change compression algo from "lzo" to "favor_lzo" to be more closer to original partition size than with "lzo". Add "sudo" to exec cmds for UBI partitions to be sure in right files permissions.
+# V6.3 - output filename is optional now for -udtb/-cdtb commands (replace extension to .dts/.dtb in input filename if output filename is not defined)
+# V6.4 - Do not change BCL1 unpacked partition size values in BCL1 header if a new partition unpacked size is less than before to be more closer to original bytes. Refactor BCL1_compress() function.
+# V6.5 - Initial support bootloader update files (LDxxxxA.bin) - NOT TESTED! DO NOT USE IT FOR REFLASH YOUR DEVICES! WRONG BOOTLOADER MAY BRICK YOUR HARDWARE!
+# V6.6 - MODELEXT partition comes with internal structure support now. Uncompress is ready to use and split partition to separate files depend on types.
+# V6.7 - MODELEXT partitions now can be compressed back with CRC fixes.
+# V6.8 - for -c command add a new CRC offset for some uncompressed partition data (like in FW96562A from Viofo A229Pro rear cam FW). Add reading chip_name and release_date info for uboot partitions, ImageHeaderCRC and ImageDataCRC info for uImage partitions.
+# V6.9 - Entry code point "Load Address" for some uncompressed BCL1 partitions now shown after -u command. Valuable for loading output partition file to IDA or Ghidra software.
+# V7.0 - Add -add command: now you may add a new partitions extracted via -x cmd from other firmware file. At this moment works only with NVTPACK_FW_HDR2 firmwares. Fix -r command when it uses with offset != 64 and CKSM partitions.
+# V7.1 - NVTPACK_FW_HDR firmwares is also supported for -add command. Fix code to add a new partition as last partition. Fix bug then no more than 2 partitions could be recognized in NVTPACK_FW_HDR firmware files (never seen such FWs yet but improve code).
+# V7.2 - Raw data partition support was added. It is for really old firmwares that does not have any headers and only 1 raw data partition with CRC (detects via "NT9" text in BinInfo1). No need to uncompress, edit file and do -fixCRC
+# V7.3 - "-delete" command was implemented for remove partition. Now partition filename for "-add" command is optional (will use input filename + "-partitionID*" if not defined). It is also respect working dir if use with "-o" option.
+# V7.4 - 'Master Boot Record' partitions is detected now and number of partition records in it is displayed
+# V7.5 - Speed up code of checksums calculation in MemCheck_CalcCheckSum16Bit()
+# V7.6 - add SquashFS partitions uncompress/compress support
+
+CURRENT_VERSION = '7.6'
+
+from genericpath import samefile
+import os, struct, sys, argparse, array
+from datetime import datetime, timezone
+import zlib
+import lzma
+import subprocess
+import platform
+
+
+in_file = ''
+in_offset = 0
+out_file = ''
+
+part_startoffset = array.array('I')
+part_endoffset = array.array('I')
+part_size = array.array('I')
+part_id = array.array('I')
+part_type = []
+part_crc = array.array('I')
+part_crcCalc = array.array('I')
+
+
+# для данных из dbt партиции о соответствии idx - имени_партиции - имени_файла_партиции
+dtbpart_ID = []
+dtbpart_name = []
+dtbpart_filename = []
+
+is_ARM64 = 0 # unknown by default, flag for apply favor_lzo compression algo in UBI rootfs partition
+
+# defines from SDKs
+NVTPACK_CHKSUM_HDR_VERSION = 0x16040719
+NVTPACK_FW_HDR2_VERSION = 0x16071515
+NVTPACK_VER = b'16072017' # NVTPACK_VER_13012816,  ///< NT9666X, NT9850X   OR   NVTPACK_VER_16072017,      ///< NT9668X
+
+
+# defines from uboot source code
+uImage_os = {
+    0 : 'Invalid OS',
+    1 : 'OpenBSD',
+    2 : 'NetBSD',
+    3 : 'FreeBSD',
+    4 : '4.4BSD',
+    5 : 'LINUX',
+    6 : 'SVR4',
+    7 : 'Esix',
+    8 : 'Solaris',
+    9 : 'Irix',
+    10: 'SCO',
+    11: 'Dell',
+    12: 'NCR',
+    13: 'LynxOS',
+    14: 'VxWorks',
+    15: 'pSOS',
+    16: 'QNX',
+    17: 'Firmware',
+    18: 'RTEMS',
+    19: 'ARTOS',
+    20: 'Unity OS',
+    21: 'INTEGRITY',
+    22: 'OSE',
+    23: 'Plan 9',
+    24: 'OpenRTOS',
+    25: 'ARM Trusted Firmware',
+    26: 'Trusted Execution Environment',
+    27: 'RISC-V OpenSBI',
+    28: 'EFI Firmware (e.g. GRUB2)'
+}
+
+uImage_arch = {
+    0 : 'Invalid CPU',
+    1 : 'Alpha',
+    2 : 'ARM',
+    3 : 'Intel x86',
+    4 : 'IA64',
+    5 : 'MIPS',
+    6 : 'MIPS 64 Bit',
+    7 : 'PowerPC',
+    8 : 'IBM S390',
+    9 : 'SuperH',
+    10: 'Sparc',
+    11: 'Sparc 64 Bit',
+    12: 'M68K',
+    13: 'Nios-32',
+    14: 'MicroBlaze',
+    15: 'Nios-II',
+    16: 'Blackfin',
+    17: 'AVR32',
+    18: 'STMicroelectronics ST200',
+    19: 'Sandbox architecture (test only)',
+    20: 'ANDES Technology - NDS32',
+    21: 'OpenRISC 1000',
+    22: 'ARM64',
+    23: 'Synopsys DesignWare ARC',
+    24: 'AMD x86_64, Intel and Via',
+    25: 'Xtensa',
+    26: 'RISC-V'
+}
+
+uImage_imagetype = {
+    0 : 'Invalid Image',
+    1 : 'Standalone Program',
+    2 : 'OS Kernel Image',
+    3 : 'RAMDisk Image',
+    4 : 'Multi-File Image',
+    5 : 'Firmware Image',
+    6 : 'Script file',
+    7 : 'Filesystem Image (any type)',
+    8 : 'Binary Flat Device Tree Blob',
+    9 : 'Kirkwood Boot Image',
+    10: 'Freescale IMXBoot Image'
+}
+
+uImage_compressiontype = {
+    0 : 'No',
+    1 : 'gzip',
+    2 : 'bzip2',
+    3 : 'lzma',
+    4 : 'lzo',
+    5 : 'lz4',
+    6 : 'zstd'
+}
+
+
+# defines from PartitionInfo.h Novatek SDK source code
+embtypes = {
+    0x00 : 'UNKNOWN',
+    0x01 : 'UITRON',
+    0x02 : 'ECOS',
+    0x03 : 'UBOOT',
+    0x04 : 'LINUX',
+    0x05 : 'DSP',
+    0x06 : 'PSTORE',
+    0x07 : 'FAT',
+    0x08 : 'EXFAT',
+    0x09 : 'UBIFS',
+    0x0A : 'RAMFS',
+    0x0B : 'UENV'     # u-boot environment data
+}
+
+# Basic Compression Library compress algos
+compressAlgoTypes = {
+    0x01 : 'RLE',
+    0x02 : 'HUFFMAN',
+    0x03 : 'RICE8',
+    0x04 : 'RICE16',
+    0x05 : 'RICE32',
+    0x06 : 'RICE8S',
+    0x07 : 'RICE16S',
+    0x08 : 'RICE32S',
+    0x09 : 'LZ',
+    0x0A : 'SF',
+    0x0B : 'LZMA',
+    0x0C : 'ZLIB'
+}
+
+
+def ShowInfoBanner():
+    print("=====================================================================================")
+    print(" \033[92mNTKFWinfo\033[0m - python script for working with Novatek firmware binary files. Ver. \033[92m%s\033[0m" % (CURRENT_VERSION))
+    print(" Show full FW \033[93mi\033[0mnfo, allow e\033[93mx\033[0mtract/\033[93madd\033[0m/\033[93mdelete\033[0m/\033[93mr\033[0meplace/\033[93mu\033[0mncompress/\033[93mc\033[0mompress partitions")
+    print(" and \033[93mfixCRC\033[0m after modifications.")
+    print("")
+    print(" Copyright © 2026 \033[93mDex9999\033[0m(4pda.to) aka \033[93mDex\033[0m aka \033[93mEgorKin\033[0m(GitHub, etc.)")
+    print(" If you like this project or use it with any commercial purposes please donate")
+    print(" \033[93mBTC\033[0m to: \033[92m12q5kucN1nvWq4gn5V3WJ8LFS6mtxbymdj\033[0m   \033[93mPayPal\033[0m to: \033[92mhttps://paypal.me/egorkindv\033[0m")
+    print("=====================================================================================")
+
+
+def get_args():
+    global in_file
+    global is_add
+    global is_del
+    global is_extract
+    global is_uncompress
+    global is_compress
+    global is_silent
+    global workdir
+
+    p = argparse.ArgumentParser(add_help=True, description='')
+    p.add_argument('-i',metavar='filename', nargs=1, help='input file')
+    p.add_argument('-x',metavar=('partID', 'offset'), nargs='+', help='extract partition by ID with optional start offset or all partitions if partID set to \"ALL\"')
+    p.add_argument('-add',metavar=('partID', 'filename'), nargs='+', help='add partition with a new ID from file and fixCRC. U may optionally redefine partition filename')
+    p.add_argument('-delete',metavar=('partID'), type=int, nargs=1, help='delete partition by ID and fixCRC')
+    p.add_argument('-r',metavar=('partID', 'offset', 'filename'), nargs=3, help='replace partition by ID with start offset using input file')
+    p.add_argument('-u',metavar=('partID', 'offset'), type=int, nargs='+', help='uncompress partition by ID with optional start offset')
+    p.add_argument('-c',metavar=('partID'), type=int, nargs=1, help='compress partition by ID to firmware input file and fixCRC')
+    p.add_argument('-udtb',metavar=('DTB_filename', 'DTS_filename'), nargs='+', help='convert DTB to DTS file')
+    p.add_argument('-cdtb',metavar=('DTS_filename', 'DTB_filename'), nargs='+', help='convert DTS to DTB file')
+    p.add_argument('-fixCRC', action='store_true', help='fix CRC values for all possible partitions and whole FW file')
+    p.add_argument('-silent', action='store_true', help='do not print messages, except errors')
+    p.add_argument('-o',metavar='outputdir', nargs=1, help='set working dir')
+
+    if len(sys.argv) < 3:
+        ShowInfoBanner()
+        p.print_help(sys.stderr)
+        sys.exit(1)
+
+    args=p.parse_args(sys.argv[1:])
+
+    if args.o:
+        workdir = args.o[0]
+        if not os.path.exists(workdir):
+            os.system('mkdir ' + '\"' + workdir + '\"')
+    else:
+        workdir = ''
+    
+    if args.x:
+        #если offset = ALL - извлекаем все партиции
+        if (args.x[0] == 'all') | (args.x[0] == 'ALL'):
+            is_extract_all = 1
+            is_extract_offset = 0
+            is_extract = 0xFF
+        else:
+            is_extract_all = 0
+            is_extract = int(args.x[0])
+            # если задан 2ой аргумент - offset
+            if len(args.x) == 2:
+                is_extract_offset = int(args.x[1])
+            else:
+                # если offset не задан - далее исправим на 0
+                is_extract_offset = -1
+    else:
+        is_extract = -1
+        is_extract_offset = -1
+        is_extract_all = 0
+
+    if args.add:
+        is_add = int(args.add[0])
+        # если задан 2ой аргумент - filename
+        if len(args.add) == 2:
+            is_add_file = str(args.add[1])
+        else:
+            is_add_file = ''
+    else:
+        is_add = -1
+        is_add_file = ''
+
+    if args.delete:
+        is_del = int(args.delete[0])
+    else:
+        is_del = -1
+
+    if args.r:
+        is_replace = int(args.r[0])
+        is_replace_offset = int(args.r[1])
+        is_replace_file = str(args.r[2])
+    else:
+        is_replace = -1
+        is_replace_offset = -1
+        is_replace_file = ''
+
+    if args.u:
+        is_uncompress = args.u[0]
+        # если задан 2ой аргумент - offset
+        if len(args.u) == 2:
+            is_uncompress_offset = int(args.u[1])
+        else:
+            # если offset не задан - то будет -1 для того чтобы дальше присвоить либо 0x40 (для CKSM) либо 0 (в остальных случаях)
+            is_uncompress_offset = -1
+    else:
+        is_uncompress = -1
+        is_uncompress_offset = -1
+
+    if args.udtb:
+        if len(args.udtb) == 2:
+            uncompressDTB(args.udtb[0], args.udtb[1])
+        else:
+            uncompressDTB(args.udtb[0])
+        exit(0)
+
+    if args.cdtb:
+        if len(args.cdtb) == 2:
+            compressToDTB(args.cdtb[0], args.cdtb[1])
+        else:
+            compressToDTB(args.cdtb[0])
+        exit(0)
+
+    if args.c:
+        is_compress = args.c[0]
+    else:
+        is_compress = -1
+
+    if args.fixCRC:
+        fixCRC_partID = 1
+    else:
+        fixCRC_partID = -1
+
+    if args.silent:
+        is_silent = 1
+    else:
+        is_silent = -1
+
+    in_file=args.i[0]
+
+    return (in_file, is_extract, is_extract_offset, is_extract_all, is_add, is_add_file, is_del, is_replace, is_replace_offset, is_replace_file, is_uncompress, is_uncompress_offset, is_compress, fixCRC_partID, is_silent)
+
+
+
+def MemCheck_CalcCheckSum16Bit(input_file, in_offset, uiLen, ignoreCRCoffset):
+    uiSum = 0
+    #pos = 0
+    num_words = uiLen // 2
+
+    with open(input_file, "rb") as f:
+        f.seek(in_offset, 0)
+        fread = array.array('h') # Читаем файл в массив знаковых 16-битных целых
+        fread.fromfile(f, num_words)
+        if sys.byteorder > 'little':
+            fread.byteswap() # fromfile() uses system byte order, if it is not LE as we need - swapbytes
+        fread[ignoreCRCoffset // 2] = 0 # игнорим 2 байта по которым лежит Checksum
+
+    # читаем по 2 байта в little endian
+    #for chunk in fread:
+    #    uiSum += chunk #+ pos
+        #pos += 1
+        #print('read=0x%04X' % chunk)
+        #print('pos=%i' % pos)
+        #print('or 0x%08X' % struct.unpack('>H', read)[0])
+        #print('CRC=0x%08X' % uiSum)
+    
+    uiSum = sum(fread) # sum of all read chunks
+    uiSum += (num_words-1)*num_words//2 # this replaced (+ pos++) in for cycle
+
+    #print('CRC=0x%08X' % uiSum)
+    uiSum = uiSum & 0xFFFF
+    uiSum = (~uiSum & 0xFFFF) + 1
+    #print('Final CRC=0x%08X' % uiSum)
+
+    return uiSum
+
+
+
+def compress_CKSM_UBI(part_nr, in2_file):
+    global in_file, is_ARM64
+
+    fin = open(in_file, 'rb')
+    fin.seek(part_startoffset[part_nr], 0)
+    FourCC = fin.read(4)
+
+    if FourCC != b'CKSM':
+        print('\033[91mNot CKSM partition, exit\033[0m')
+        exit(0)
+
+    # skip CKSM header
+    fin.seek(part_startoffset[part_nr] + 0x40, 0)
+
+    FourCC = fin.read(4)
+    if FourCC != b'UBI#':
+        print('\033[91mNot UBI# into CKSM partition, exit\033[0m')
+        exit(0)
+
+    # для UBI на вход должна подаваться папка партиции, а не файл
+    if not os.path.exists(in2_file):
+        print('\033[91m%s folder does not found, exit\033[0m' % in2_file)
+        exit(0)
+
+    # extract UBI partition to tempfile
+    fin.seek(part_startoffset[part_nr] + 0x40, 0)
+    finread = fin.read(part_size[part_nr] - 0x40)
+    fin.close()
+    fpartout = open(in2_file + '/tempfile', 'w+b')
+    fpartout.write(finread)
+    fpartout.close()
+
+    # delete temp dir for info - ubireader require clear folder
+    subprocess.run('rm -rf ' + '\"' + in2_file + '/tempdir' + '\"', shell=True)
+
+    # get info about UBI to compressing script
+    subprocess.check_output('ubireader_utils_info ' + '-o ' + '\"' + in2_file + '/tempdir' + '\"' + ' ./' + '\"' + in2_file + '/tempfile' + '\"', shell=True)
+
+    # delete tempfile
+    subprocess.run('rm ' + '\"' + in2_file + '/tempfile' + '\"', shell=True)
+    
+    # получим имя папки в которую была распакована партиция (пока я видел чисто цифровые имена, тоже что и image_seq -Q в выводе ubireader_utils_info)
+    d = os.popen('(cd ' + '\"' + in2_file + '\"' + '&& find -maxdepth 1 -wholename "./*" -not -wholename "./temp*" -type d)').read()
+
+    # проверим что нашли
+    if not os.path.exists(in2_file + d[1:-1]):
+        print('\033[91mNo input valid folder in %s found, exit\033[0m' % in2_file)
+        exit(0)
+
+    # d[2:-1] уберем ./ в начале и новую строку в конце имени папки
+    d = d[2:-1]
+
+    # fix ini-file: delete line "vol_flags=0" it cause error "unknown flags"
+    subprocess.run('(cd ' + '\"' + in2_file + '/tempdir/tempfile/img-' + d + '\"' + ' && sed -i "/vol_flags = 0/d" img-' + d + '.ini)', shell=True)
+
+    # fix .sh file for ARM64 rootfs partition only: change compressior algo from "lzo" to "favor_lzo" to be more closer to original partition size than with "lzo"
+    if (is_ARM64 == 1):
+        # Т.к. UBIname я нигде не храню, сделал проверку по pratition type
+        if dtbpart_name[part_id[part_nr]][:6] == 'rootfs':
+            #print('Use favor_lzo instead lzo')
+            subprocess.run('(cd ' + '\"' + in2_file + '/tempdir/tempfile/img-' + d + '\"' + ' && sed -i "s/-x lzo/-x favor_lzo/" create_ubi_img-' + d + '.sh)', shell=True)
+
+    # run compilation dir to ubi script
+    subprocess.run('(cd ' + '\"' + in2_file + '/tempdir/tempfile/img-' + d + '\"' + ' && sudo ./create_ubi_img-' + d + '.sh ../../../' + d + '/*)', shell=True)
+
+    # hide output print
+    global is_silent
+    is_silent = 1
+
+    # replace partition
+    partition_replace(part_id[part_nr], 0x40, in2_file + '/tempdir/tempfile/img-' + d + '/img-' + d + '.ubi')
+
+    # delete temp dir for info
+    subprocess.run('rm -rf ' + '\"' + in2_file + '/tempdir' + '\"', shell=True)
+
+    # fix CRC
+    is_silent = -1
+    fixCRC(part_id[part_nr])
+
+
+
+def compress_CKSM_BCL(part_nr, in2_file):
+    global in_file
+
+    fin = open(in_file, 'rb')
+    fin.seek(part_startoffset[part_nr], 0)
+    FourCC = fin.read(4)
+
+    if FourCC != b'CKSM':
+        print('\033[91mNot CKSM partition, exit\033[0m')
+        exit(0)
+
+    # skip CKSM header
+    fin.seek(part_startoffset[part_nr] + 0x40, 0)
+
+    FourCC = fin.read(4)
+    if FourCC != b'BCL1':
+        print('\033[91mNot BCL1 into CKSM partition, exit\033[0m')
+        exit(0)
+
+    # для BCL1 на вход должен подаваться файл
+    if not os.path.isfile(in2_file):
+        print('\033[91m%s file does not found, exit\033[0m' % in2_file)
+        exit(0)
+
+    # compress uncomp_partitionID to comp_partitionID
+    BCL1_compress(part_nr, 0x40, in2_file)
+
+    comp_filename = in2_file.replace('uncomp_partitionID', 'comp_partitionID')
+    # проверим прошла ли упаковка успешно
+    if not os.path.isfile(comp_filename):
+        print('\033[91m%s compressed partition file does not found, exit\033[0m' % comp_filename)
+        exit(0)
+    
+    # hide output print
+    global is_silent
+    is_silent = 1
+
+    # replace partition
+    partition_replace(part_id[part_nr], 0x40, comp_filename)
+
+    # delete comp_partitionID file
+    subprocess.run('rm -rf ' + '\"' + comp_filename + '\"', shell=True)
+
+    # fix CRC for CKSM
+    is_silent = -1
+    fixCRC(part_id[part_nr])
+
+
+
+def compress_CKSM_SPARSE(part_nr, in2_file):
+    global in_file
+
+    fin = open(in_file, 'rb')
+    fin.seek(part_startoffset[part_nr], 0)
+    FourCC = fin.read(4)
+
+    if FourCC != b'CKSM':
+        print('\033[91mNot CKSM partition, exit\033[0m')
+        exit(0)
+
+    # skip CKSM header
+    fin.seek(part_startoffset[part_nr] + 0x40, 0)
+
+    FourCC = fin.read(4)
+    if struct.unpack('>I', FourCC)[0] != 0x3AFF26ED:
+        print('\033[91mNot SPARSE into CKSM partition, exit\033[0m')
+        exit(0)
+
+    # для SPARSE на вход должна подаваться папка партиции, а не файл
+    if not os.path.exists(in2_file):
+        print('\033[91m%s folder does not found, exit\033[0m' % in2_file + '/mount')
+        exit(0)
+
+    # для сборки SPARSE нужно знать размер tempfile.ext4
+    if not os.path.isfile(in2_file + '/tempfile.ext4'):
+        print('\033[91m%s file does not found, exit\033[0m' % in2_file + '/tempfile.ext4')
+        exit(0)
+
+    # run compilation dir to SPARSE EXT4 cmd
+    # "make_ext4fs" is deprecated now
+    #os.popen('make_ext4fs -s -l ' + str(os.path.getsize(in2_file + '/tempfile.ext4')) + ' ' + '\"' + in2_file + '/tempSPARSEfile' + '\"' + ' ' + '\"' + in2_file + '/mount' + '\"').read()
+
+    # umount - it is mean that we updates tempfile.ext4 file depend on current /mount folder
+    subprocess.run('umount -d -f ' + '\"' + in2_file + '/mount' + '\"', shell=True)
+
+    # convert ext4 to SPARSE
+    subprocess.run('img2simg ' + '\"' + in2_file + '/tempfile.ext4' + '\"' + ' ' + '\"' + in2_file + '/tempSPARSEfile' + '\"', shell=True)
+
+    # hide output print
+    global is_silent
+    is_silent = 1
+
+    # replace partition
+    partition_replace(part_id[part_nr], 0x40, in2_file + '/tempSPARSEfile')
+
+    # удалим всю директорию
+    # delete tempfile & tempfile.ext4 & tempSPARSEfile
+    os.system('rm -rf ' + '\"' + in2_file + '\"')
+
+    # fix CRC
+    is_silent = -1
+    fixCRC(part_id[part_nr])
+
+
+
+def compress_CKSM_SquashFS(part_nr, in2_file):
+    global in_file
+
+    fin = open(in_file, 'rb')
+    fin.seek(part_startoffset[part_nr], 0)
+    FourCC = fin.read(4)
+
+    if FourCC != b'CKSM':
+        print('\033[91mNot CKSM partition, exit\033[0m')
+        exit(0)
+
+    # skip CKSM header
+    fin.seek(part_startoffset[part_nr] + 0x40, 0)
+
+    FourCC = fin.read(4)
+    if struct.unpack('>I', FourCC)[0] != 0x73717368 and struct.unpack('>I', FourCC)[0] != 0x68737173:
+        print('\033[91mNot SquashFS into CKSM partition, exit\033[0m')
+        exit(0)
+
+    # для SquashFS на вход должна подаваться папка партиции, а не файл
+    if not os.path.exists(in2_file + '/mount'):
+        print('\033[91m%s folder does not found, exit\033[0m' % in2_file + '/mount')
+        exit(0)
+
+    # read SquashFS compression algo
+    fin.seek(4, 1)
+    modificationTime = struct.unpack('<I', fin.read(4))[0]
+    fin.seek(8, 1)
+    compressionID = struct.unpack('<H', fin.read(2))[0]
+    if compressionID == 1:
+        squashfs_comp_algo = 'gzip'
+    if compressionID == 2:
+        squashfs_comp_algo = 'lzma'
+    if compressionID == 3:
+        squashfs_comp_algo = 'lzo'
+    if compressionID == 4:
+        squashfs_comp_algo = 'xz'
+    if compressionID == 5:
+        squashfs_comp_algo = 'lz4'
+    if compressionID == 6:
+        squashfs_comp_algo = 'zstd'
+
+    if (compressionID < 1 or compressionID > 6):
+        print('\033[91m%s comp algo for squashfs is unknown, exit\033[0m' % compressionID)
+        exit(0)
+
+    # umount - it is mean that we updates tempfile.ext4 file depend on current /mount folder
+    subprocess.run('sudo mksquashfs ' + '\"' + in2_file + '/mount' + '\"' + ' ' + '\"' + in2_file + '/tempfile' + '\"' + ' -comp ' + squashfs_comp_algo + ' -mkfs-time ' + str(modificationTime) + ' -quiet -no-progress', shell=True)
+
+    # hide output print
+    global is_silent
+    is_silent = 1
+
+    # replace partition
+    partition_replace(part_id[part_nr], 0x40, in2_file + '/tempfile')
+
+    # удалим всю директорию
+    # delete tempfile & tempfile.ext4 & tempSquashFSfile
+    os.system('rm -rf ' + '\"' + in2_file + '\"')
+
+    # fix CRC
+    is_silent = -1
+    fixCRC(part_id[part_nr])
+
+
+
+def compress_BCL(part_nr, in2_file):
+    global in_file
+    global FW_BOOTLOADER
+
+    fin = open(in_file, 'rb')
+    fin.seek(part_startoffset[part_nr], 0)
+
+    FourCC = fin.read(4)
+    if FourCC != b'BCL1':
+        print('\033[91mNot BCL1 partition, exit\033[0m')
+        exit(0)
+
+    # для BCL1 на вход должен подаваться файл
+    if not os.path.isfile(in2_file):
+        print('\033[91m%s file does not found, exit\033[0m' % in2_file)
+        exit(0)
+
+    # compress uncomp_partitionID to comp_partitionID
+    BCL1_compress(part_nr, 0, in2_file)
+
+    comp_filename = in2_file.replace('uncomp_partitionID', 'comp_partitionID')
+    # проверим прошла ли упаковка успешно
+    if not os.path.isfile(comp_filename):
+        print('\033[91m%s compressed partition file does not found, exit\033[0m' % comp_filename)
+        exit(0)
+
+    # hide output print
+    global is_silent
+    is_silent = 1
+
+    # replace partition
+    partition_replace(part_id[part_nr], 0, comp_filename)
+
+    # delete comp_partitionID file
+    subprocess.run('rm -rf ' + '\"' + comp_filename + '\"', shell=True)
+    
+     # check total file size in bootloader header and append 00 if need
+    if FW_BOOTLOADER == 1:
+        filesize = os.path.getsize(in_file)
+        fin = open(in_file, 'r+b')
+        fin.seek(0x24, 0)
+        file_size_from_header = struct.unpack('<I', fin.read(4))[0] # read proper filesize from header
+        #print(file_size_from_header)
+        #print(filesize)
+        # если в заголовке bootloader прописан бОльший размер файла то дополним 00
+        if file_size_from_header > filesize:
+            fin.seek(0, 2) # go to the end of file
+            fin.write(b'\x00' * (file_size_from_header - filesize))
+            fin.close()
+        else:
+            if filesize > file_size_from_header:
+                print('\033[91mFatal error: New bootlader file size exeed initial limit\033[0m')
+                fin.close()
+                exit(0)
+
+    # fix CRC
+    is_silent = -1
+    fixCRC(part_id[part_nr])
+
+
+
+def compress_FDT(part_nr, in2_file):
+    global in_file
+    
+    fin = open(in_file, 'rb')
+    fin.seek(part_startoffset[part_nr], 0)
+
+    FourCC = fin.read(4)
+    if struct.unpack('>I', FourCC)[0] != 0xD00DFEED:
+        print('\033[91mNot FDT(DTB) partition, exit\033[0m')
+        exit(0)
+
+    # для FDT(DTB) на вход должен подаваться файл
+    if not os.path.isfile(in2_file):
+        print('\033[91m%s file does not found, exit\033[0m' % in2_file)
+        exit(0)
+
+    # compress uncomp_partitionID to comp_partitionID
+    comp_filename = in2_file.replace('uncomp_partitionID', 'comp_partitionID')
+    os.system('dtc -qq -I dts -O dtb ' + '\"' + in2_file + '\"' + ' -o ' + '\"' + comp_filename + '\"')
+
+    # проверим прошла ли упаковка успешно
+    if not os.path.isfile(comp_filename):
+        print('\033[91m%s compressed partition file does not found, exit\033[0m' % comp_filename)
+        exit(0)
+
+    # hide output print
+    global is_silent
+    is_silent = 1
+
+    # replace partition
+    partition_replace(part_id[part_nr], 0, comp_filename)
+    
+    # delete comp_partitionID file
+    subprocess.run('rm -rf ' + '\"' + comp_filename + '\"', shell=True)
+
+    # fix CRC
+    is_silent = -1
+    fixCRC(part_id[part_nr])
+
+
+
+def compress_MODELEXT(part_nr, in2_file):
+    global in_file
+
+    fin = open(in_file, 'rb')
+    fin.seek(part_startoffset[part_nr], 0)
+
+    MODELEXT_SIZE = struct.unpack('<I', fin.read(4))[0]
+    MODELEXT_TYPE = struct.unpack('<I', fin.read(4))[0]
+    MODELEXT_NUMBER = struct.unpack('<I', fin.read(4))[0]
+    MODELEXT_VERSION = struct.unpack('<I', fin.read(4))[0]
+    if (MODELEXT_TYPE == 1) and (MODELEXT_VERSION == 0x16072219) and (str(struct.unpack('8s', fin.read(8))[0])[2:-1] == 'MODELEXT'):
+        fin.seek(MODELEXT_SIZE - 24, 1)
+        type_str = ''
+        compressed_data = bytearray()
+
+        while(1):
+            if MODELEXT_TYPE == 1:
+                type_str = '_INFO'
+            if MODELEXT_TYPE == 2:
+                type_str = '_BIN_INFO'
+            if MODELEXT_TYPE == 3:
+                type_str = '_PINMUX_CFG'
+            if MODELEXT_TYPE == 4:
+                type_str = '_INTDIR_CFG'
+            if MODELEXT_TYPE == 5:
+                type_str = '_EMB_PARTITION'
+            if MODELEXT_TYPE == 6:
+                type_str = '_GPIO_INFO'
+            if MODELEXT_TYPE == 7:
+                type_str = '_DRAM_PARTITION'
+            if MODELEXT_TYPE == 8:
+                type_str = '_MODEL_CFG'
+            if type_str == '':
+                break
+            
+            # для MODELEXT на вход должны подаваться файлы
+            inputname = in2_file + '_' + str(MODELEXT_TYPE) + type_str
+            if not os.path.isfile(inputname):
+                print('\033[91m%s sub-partition file does not found, exit\033[0m' % (inputname))
+                exit(0)
+
+            fadd = open(inputname, 'rb')
+            part_data = fadd.read()
+            fadd.close()
+
+            print('Compressing \033[93m%s sub-partition file...\033[0m' % (inputname))
+            compressed_data += struct.pack('<I', MODELEXT_SIZE)
+            compressed_data += struct.pack('<I', MODELEXT_TYPE)
+            compressed_data += struct.pack('<I', MODELEXT_NUMBER)
+            compressed_data += struct.pack('<I', MODELEXT_VERSION)
+            compressed_data += part_data
+
+            # continue with next sub-part
+            MODELEXT_SIZE = struct.unpack('<I', fin.read(4))[0]
+            MODELEXT_TYPE = struct.unpack('<I', fin.read(4))[0]
+            MODELEXT_NUMBER = struct.unpack('<I', fin.read(4))[0]
+            MODELEXT_VERSION = struct.unpack('<I', fin.read(4))[0]
+            type_str = ''
+            fin.seek(MODELEXT_SIZE - 16, 1)
+
+        # compressed_data is combined now
+
+        # calc padding bytes for whole MODELEXT partition
+        addsize = (len(compressed_data) % 4)
+        if addsize != 0:
+            addsize = 4 - addsize
+            compressed_data += b'\x00' * addsize
+
+        # save compressed_data to file
+        comp_filename = in2_file.replace('uncomp_partitionID', 'comp_partitionID')
+        fout = open(comp_filename, 'w+b')
+        fout.write(compressed_data[:0x30] + struct.pack('<I', len(compressed_data)) + compressed_data[0x34:]) # fix total file size value in MODELEXT INFO sub-partition
+        fout.close()
+
+        # проверим прошла ли упаковка успешно
+        if not os.path.isfile(comp_filename):
+            print('\033[91m%s compressed partition file does not found, exit\033[0m' % comp_filename)
+            exit(0)
+
+        # hide output print
+        global is_silent
+        is_silent = 1
+
+        # replace partition
+        partition_replace(part_id[part_nr], 0, comp_filename)
+
+        # delete comp_partitionID file
+        subprocess.run('rm -rf ' + '\"' + comp_filename + '\"', shell=True)
+
+        # fix CRC
+        is_silent = -1
+        fixCRC(part_id[part_nr])
+
+
+
+def compress(part_nr, in2_file):
+    global in_file
+
+    fin = open(in_file, 'rb')
+    fin.seek(part_startoffset[part_nr], 0)
+    FourCC = fin.read(4)
+
+    if FourCC == b'CKSM':
+        # skip CKSM header
+        fin.seek(part_startoffset[part_nr] + 0x40, 0)
+        FourCC = fin.read(4)
+
+        # CKSM<--UBI#
+        if FourCC == b'UBI#':
+            fin.close()
+            compress_CKSM_UBI(part_nr, in2_file)
+            return
+
+        # CKSM<--BCL1
+        if FourCC == b'BCL1':
+            fin.close()
+            compress_CKSM_BCL(part_nr, in2_file)
+            return
+
+        # CKSM<--SPARSE EXT4 image
+        if struct.unpack('>I', FourCC)[0] == 0x3AFF26ED:
+            fin.close()
+            compress_CKSM_SPARSE(part_nr, in2_file)
+            return
+
+        # CKSM<--SquashFS image
+        if struct.unpack('>I', FourCC)[0] == 0x73717368 or struct.unpack('>I', FourCC)[0] == 0x68737173:
+            fin.close()
+            compress_CKSM_SquashFS(part_nr, in2_file)
+            return
+    else:
+        # BCL1
+        if FourCC == b'BCL1':
+            fin.close()
+            compress_BCL(part_nr, in2_file)
+            return
+
+        # FDT(DTB)
+        if struct.unpack('>I', FourCC)[0] == 0xD00DFEED:
+            fin.close()
+            compress_FDT(part_nr, in2_file)
+            return
+
+        # MODELEXT
+        MODELEXT_TYPE = struct.unpack('<I', fin.read(4))[0]
+        fin.read(4)
+        MODELEXT_VERSION = struct.unpack('<I', fin.read(4))[0]
+        if (MODELEXT_TYPE == 1) and (MODELEXT_VERSION == 0x16072219) and (str(struct.unpack('8s', fin.read(8))[0])[2:-1] == 'MODELEXT'):
+            fin.close()
+            compress_MODELEXT(part_nr, in2_file)
+            return
+
+    print("\033[91mThis partition type is not supported for compression\033[0m")
+    exit(0)
+
+
+
+def BCL1_compress(part_nr, in_offset, in2_file):
+    global in_file
+    global FW_BOOTLOADER
+
+    fin = open(in_file, 'rb')
+
+    # check BCL1 marker at start of partition    
+    fin.seek(part_startoffset[part_nr] + in_offset, 0)
+    FourCC = fin.read(4)
+    if FourCC != b'BCL1':
+        print("\033[91mBCL1 marker not found, exit\033[0m")
+        sys.exit(1)
+
+    # skip old CRC 2 bytes
+    oldCRC = fin.read(2)
+
+    # check compression algo
+    Algorithm = struct.unpack('>H', fin.read(2))[0]
+
+    if (Algorithm != 0x09) & (Algorithm != 0x0B) & (Algorithm != 0x0C):
+        print("\033[91mCompression algo %0X is not supported\033[0m" % Algorithm)
+        sys.exit(1)
+
+    unpacked_part_size = struct.unpack('>I', fin.read(4))[0] # read from input file BCL1 unpacked partition size
+    #packed_part_size = struct.unpack('>I', fin.read(4))[0] # read from input file BCL1 packed partition size
+
+    # read LZMA Dictionary size - 4 байта в заголовке LZMA
+    if (Algorithm == 0x0B):
+        fin.seek(part_startoffset[part_nr] + in_offset + 0x10, 0)
+        LZMA_Properties = struct.unpack('B', fin.read(1))[0] # lc, lp and pb values
+        LZMA_DictionarySize = struct.unpack('<I', fin.read(4))[0]
+        LZMA_UncompressedSize64_Low = struct.unpack('<I', fin.read(4))[0]
+        LZMA_UncompressedSize64_High = struct.unpack('<I', fin.read(4))[0]
+        
+    out = in2_file.replace('uncomp_partitionID', 'comp_partitionID')
+
+
+    fin.close()
+    fin = open(in2_file, 'rb')
+    dataread = bytearray(fin.read())
+    fin.close()
+
+    # с BCL1 в плане CRC всё интересно - есть CRC в заголовке BCL1 по смещению 0x4 который расчитывается в самом конце уже после сжатия данных
+    # а ещё есть CRC несжатых данных:
+    #   если по смещению 0x6C лежат FFFF а по 0x46C лежат 55AA то CRC_offset = 0x46E- изменил это из-за Viofo FW139, ввел доп. условие
+    # а если по смещению 0x6C лежат 55AA то CRC_offset = 0x6E
+    # а еще может быть в самом начале файла 0x100 байт данных из-за которых по смещению 0x16C лежат 55AA и CRC_offset = 0x16E
+    # а еще может быть в самом начале файла 0x200 байт данных из-за которых по смещению 0x26C лежат 55AA и CRC_offset = 0x26E
+    #
+    # иначе в файле прошивки нет CRC для несжатых данных
+    # Если он есть то этот CRC нужно расчитать и записать до того как начать сжатие в BCL1
+    if (dataread[0x6C] == 0xFF) & (dataread[0x6D] == 0xFF) & (dataread[0x46C] == 0x55) & (dataread[0x46D] == 0xAA):
+        newCRC = MemCheck_CalcCheckSum16Bit(in2_file, 0, len(dataread), 0x46E)
+        oldCRC = (dataread[0x46F]<<8)|dataread[0x46E]
+        if is_silent != 1:
+            if oldCRC != newCRC:
+                print('Uncompressed data partitionID %i at \033[94m0x%04X\033[0m: ORIG_CRC:\033[93m0x%04X\033[0m CALC_CRC:\033[91m0x%04X\033[0m, \033[94mCRC fixed\033[0m' % (part_id[part_nr], 0x46E, oldCRC, newCRC))
+            else:
+                print('Uncompressed data partitionID %i at \033[94m0x%04X\033[0m: ORIG_CRC:\033[93m0x%04X\033[0m CALC_CRC:\033[92m0x%04X\033[0m' % (part_id[part_nr], 0x46E, oldCRC, newCRC))
+        dataread[0x46E] = (newCRC & 0xFF)
+        dataread[0x46F] = ((newCRC >> 8) & 0xFF)
+    else:
+        if (dataread[0x6C] == 0x55) & (dataread[0x6D] == 0xAA):
+            newCRC = MemCheck_CalcCheckSum16Bit(in2_file, 0, len(dataread), 0x6E)
+            oldCRC = (dataread[0x6F]<<8)|dataread[0x6E]
+            if is_silent != 1:
+                if oldCRC != newCRC:
+                    print('Uncompressed data partitionID %i at \033[94m0x%04X\033[0m: ORIG_CRC:\033[93m0x%04X\033[0m CALC_CRC:\033[91m0x%04X\033[0m, \033[94mCRC fixed\033[0m' % (part_id[part_nr], 0x6E, oldCRC, newCRC))
+                else:
+                    print('Uncompressed data partitionID %i at \033[94m0x%04X\033[0m: ORIG_CRC:\033[93m0x%04X\033[0m CALC_CRC:\033[92m0x%04X\033[0m' % (part_id[part_nr], 0x6E, oldCRC, newCRC))
+            dataread[0x6E] = (newCRC & 0xFF)
+            dataread[0x6F] = ((newCRC >> 8) & 0xFF)
+        else:
+            # для Viofo A139 Pro появилось вот такое ещё условие
+            if (dataread[0x16C] == 0x55) & (dataread[0x16D] == 0xAA):
+                newCRC = MemCheck_CalcCheckSum16Bit(in2_file, 0, len(dataread), 0x16E)
+                oldCRC = (dataread[0x16F]<<8)|dataread[0x16E]
+                if is_silent != 1:
+                    if oldCRC != newCRC:
+                        print('Uncompressed data partitionID %i at \033[94m0x%04X\033[0m: ORIG_CRC:\033[93m0x%04X\033[0m CALC_CRC:\033[91m0x%04X\033[0m, \033[94mCRC fixed\033[0m' % (part_id[part_nr], 0x16E, oldCRC, newCRC))
+                    else:
+                        print('Uncompressed data partitionID %i at \033[94m0x%04X\033[0m: ORIG_CRC:\033[93m0x%04X\033[0m CALC_CRC:\033[92m0x%04X\033[0m' % (part_id[part_nr], 0x16E, oldCRC, newCRC))
+                dataread[0x16E] = (newCRC & 0xFF)
+                dataread[0x16F] = ((newCRC >> 8) & 0xFF)
+            else:
+                # для задней камеры на NTK96562A (от Viofo A229 Pro) появилось вот такое ещё условие
+                if (dataread[0x26C] == 0x55) & (dataread[0x26D] == 0xAA):
+                    newCRC = MemCheck_CalcCheckSum16Bit(in2_file, 0, len(dataread), 0x26E)
+                    oldCRC = (dataread[0x26F]<<8)|dataread[0x26E]
+                    if is_silent != 1:
+                        if oldCRC != newCRC:
+                            print('Uncompressed data partitionID %i at \033[94m0x%04X\033[0m: ORIG_CRC:\033[93m0x%04X\033[0m CALC_CRC:\033[91m0x%04X\033[0m, \033[94mCRC fixed\033[0m' % (part_id[part_nr], 0x26E, oldCRC, newCRC))
+                        else:
+                            print('Uncompressed data partitionID %i at \033[94m0x%04X\033[0m: ORIG_CRC:\033[93m0x%04X\033[0m CALC_CRC:\033[92m0x%04X\033[0m' % (part_id[part_nr], 0x26E, oldCRC, newCRC))
+                    dataread[0x26E] = (newCRC & 0xFF)
+                    dataread[0x26F] = ((newCRC >> 8) & 0xFF)
+
+    # LZ77 compress
+    if Algorithm == 0x09:
+        # размер в байтах сжимаемых данных
+        insize = len(dataread)
+
+        # temporary buffer (internal working buffer), which must be able to hold (insize+65536) unsigned integers
+        work = []
+        for a in range(65536 + insize):
+            work.append(0x00000000)
+
+        # Build a "jump table"
+        for i in range(65536):
+            work[ i ] = 0xffffffff
+        for i in range(insize-1):
+            symbols = ((dataread[i]) << 8) | (dataread[i+1])
+            index = work[ symbols ]
+            work[ symbols ] = i
+            work[ 65536 + i ] = index
+
+        work[ 65536 + insize-1 ] = 0xffffffff
+
+
+        # найдем наименее встречающийся байт среди сжимаемых данных
+        # он будет маркером т.к. маркер кодируется 2 байтами то чем меньше таких символов тем лучше сжатие
+        histogram = []
+        for a in range(256):
+            histogram.append(0)
+        for a in range(len(dataread)):
+            histogram[int(dataread[a])] += 1
+        marker = histogram.index(min(histogram))
+        #print("new marker byte = 0x%02X" % marker)
+
+
+        # Lower values give faster compression, while higher values gives better compression.
+        # 100000 дает байт в байт такое же сжатие как у всех старых оригинальных прошивок
+        LZ_MAX_OFFSET = 100000
+
+        compressed_data = bytearray()
+
+        # для замеров скорости выполнения
+        startT = datetime.now()
+        # для вывода прогресса работы
+        oldcurrprogress = 0
+
+        # Write marker byte as first symbol for the decoder
+        compressed_data.append(marker)
+        #print("new LZ marker = 0x%02X" % marker)
+
+        # Start of compression
+        inpos = 0
+        outpos = 1
+
+        # Main compression loop
+        bytesleft = insize
+        while bytesleft > 3:
+            # Search history window for maximum length string match
+            bestlength = 3
+            bestoffset = 0
+
+            j = work[ 65536 + inpos ]
+            while (j != 0xffffffff) & ((inpos - j) < LZ_MAX_OFFSET):
+
+                # защита от выхода за пределы массива dataread[]
+                if (j + bestlength >= insize):
+                    break
+                if (inpos + bestlength >= insize):
+                    break
+
+                # Quickly determine if this is a candidate (for speed)
+                if dataread[ j + bestlength ] == dataread[ inpos + bestlength ]:
+                    # Determine maximum length for this offset
+                    offset = inpos - j
+                    if bytesleft < offset:
+                        maxlength = bytesleft
+                    else:
+                        maxlength = offset
+
+                    # Count maximum length match at this offset
+                    #length = _LZ_StringCompare( ptr1, ptr2, 2, maxlength );
+                    length = 2
+                    while (length < maxlength):
+                        if (dataread[ inpos + length ] == dataread[ j + length ]):
+                            length += 1
+                        else:
+                            break
+
+                    # Better match than any previous match?
+                    if length > bestlength:
+                        bestlength = length
+                        bestoffset = offset
+
+                # Get next possible index from jump table
+                j = work[ 65536 + j ]
+
+
+            # Was there a good enough match?
+            if( (bestlength > 7) |
+                ((bestlength == 4) & (bestoffset <= 0x0000007f)) |
+                ((bestlength == 5) & (bestoffset <= 0x00003fff)) |
+                ((bestlength == 6) & (bestoffset <= 0x001fffff)) |
+                ((bestlength == 7) & (bestoffset <= 0x0fffffff)) ):
+                    compressed_data.append(marker)
+                    #print("0x%08X : 0x%02X" % (outpos, marker))
+                    outpos += 1
+
+                    #print("length = 0x%08X" % bestlength)
+                    ##outpos += _LZ_WriteVarSize( bestlength, &out[ outpos ] )
+                    buf = 0
+                    y = bestlength >> 3
+                    num_bytes = 5
+                    while num_bytes >= 2:
+                        if y & 0xfe000000 != 0:
+                            break
+                        y <<= 7
+                        num_bytes -= 1
+                    # Write all bytes, seven bits in each, with 8:th bit set for all
+                    # but the last byte.
+                    i = num_bytes-1
+                    while i >= 0:
+                        b = (bestlength >> (i*7)) & 0x0000007f
+                        if i > 0:
+                            b |= 0x00000080
+                        buf = (buf<<8) | b
+                        i -= 1
+                    # Return number of bytes written
+                    outpos += num_bytes
+                    #print("write num_bytes = %d" % num_bytes)
+                    #print("write buf:")
+
+                    while num_bytes > 0:
+                        #print("0x%02X" % ((buf>>(8*(num_bytes - 1)))&0xFF))
+                        compressed_data.append((buf>>(8*(num_bytes - 1)))&0xFF)
+                        num_bytes -= 1
+
+                    #print("offset = 0x%08X" % bestoffset)
+                    ##outpos += _LZ_WriteVarSize( bestoffset, &out[ outpos ] )
+                    buf = 0
+                    y = bestoffset >> 3
+                    num_bytes = 5
+                    while num_bytes >= 2:
+                        if y & 0xfe000000 != 0:
+                            break
+                        y <<= 7
+                        num_bytes -= 1
+                    # Write all bytes, seven bits in each, with 8:th bit set for all
+                    # but the last byte.
+                    i = num_bytes-1
+                    while i >= 0:
+                        b = (bestoffset >> (i*7)) & 0x0000007f
+                        if i > 0:
+                            b |= 0x00000080
+                        buf = (buf<<8) | b
+                        i -= 1
+                    # Return number of bytes written
+                    outpos += num_bytes
+                    #print("write num_bytes = %d" % num_bytes)
+                    #print("write buf:")
+
+                    while num_bytes > 0:
+                        #print("0x%02X" % ((buf>>(8*(num_bytes - 1)))&0xFF))
+                        compressed_data.append((buf>>(8*(num_bytes - 1)))&0xFF)
+                        num_bytes -= 1
+
+                    inpos += bestlength
+                    bytesleft -= bestlength
+            else:
+                # Output single byte (or two bytes if marker byte)
+                symbol = dataread[ inpos ]
+                inpos += 1
+                compressed_data.append(symbol)
+                #print("0x%02X" % symbol)
+                outpos += 1
+                if symbol == marker:
+                    compressed_data.append(0)
+                    #print("0x00")
+                    outpos += 1
+                bytesleft -= 1
+
+            # вывод прогресса работы упаковщика
+            currprogress = round(inpos/insize*100)
+            if currprogress > oldcurrprogress:
+                updateProgressBar(currprogress)
+                oldcurrprogress = currprogress
+
+        # Dump remaining bytes, if any
+        while inpos < insize:
+            if dataread[ inpos ] == marker:
+                compressed_data.append(marker)
+                #print("0x%02X" % marker)
+                outpos += 1
+                compressed_data.append(0)
+                #print("0x00")
+                outpos += 1
+            else:
+                compressed_data.append(dataread[ inpos ])
+                #print("0x%02X" % dataread[ inpos ])
+                outpos += 1
+            inpos += 1
+
+        endT = datetime.now()
+        print("elapsed: %s" % str(endT - startT))
+        # compressed_data is ready to save now
+
+
+    # LZMA compress
+    if Algorithm == 0x0B:
+        # For old SDK worked well (byte-by-byte): 7-zip lzma.exe e -a1 -d20 -mfbt4 -fb40 -mc36 -lc3 -lp0 -pb2 infile outfile
+        #
+        # xz --format=lzma --keep -z --lzma1=dict=96k,lc=3,lp=0,pb=2,mf=bt4,nice=26,depth=0 ./LD98530A.bin-uncomp_partitionID0
+        # best: 41,19 (46 076 bytes); 41,20 (46 083 bytes); 26,0 (46 084 bytes); nice=26 is best of all for many depth values
+        #print('start...')
+        #for depth in range(0,1000,1):
+        #print(depth)
+        #depth = 0
+        #for qqq in range(2,274,1):
+        #    print(qqq)
+        #    subprocess.run('xz --format=lzma --keep -z -e --lzma1=dict=96k,lc=3,lp=0,pb=2,mf=bt4,nice=' + str(qqq) + ',depth=' + str(depth) + ' ./LD98530A.bin-uncomp_partitionID0 -c >>./1/out' + str(qqq) + '-' + str(depth) + '.lzma', shell=True)
+        #exit(1)
+
+        fast_bytes = 40 # should be in range (2 - 273)
+        search_depth = 16 + fast_bytes//2 # depth search формула для любого из MF_BT2-4, либо = 0 для автоподбора по lp lc pb
+
+        lc = LZMA_Properties % 9
+        LZMA_Properties_t = LZMA_Properties // 9
+        pb = LZMA_Properties_t // 5
+        lp = LZMA_Properties_t % 5
+        #print('lc=%i lp=%i pb=%i' % (lc, lp, pb)) # usually 3, 0, 2
+
+        #print("LZMA_DictionarySize=0x%08X" % LZMA_DictionarySize)
+        # -d20 for lzma.exe это (1 << 20) и это 1MiB
+        if LZMA_DictionarySize < (1 << 12):
+            LZMA_DictionarySize = (1 << 12)
+            #print("Fixed LZMA_DictionarySize=0x%08X" % LZMA_DictionarySize)
+        
+        my_filters = [{"id":lzma.FILTER_LZMA1, "mode":lzma.MODE_NORMAL, "dict_size":LZMA_DictionarySize, "mf":lzma.MF_BT4, "nice_len":fast_bytes, "depth":search_depth, "lc":lc, "lp":lp, "pb":pb}]
+
+        compressed_data = lzma.compress(dataread, format = lzma.FORMAT_ALONE, filters = my_filters) # но пока что filters не работает с pypy3 и это все равно не дает байт в байт сжатие как lzma.exe
+        ##compressed_data = lzma.compress(dataread, format = lzma.FORMAT_ALONE)
+        # compressed_data is ready to save now
+
+
+    # ZLIB compress
+    if Algorithm == 0x0C:
+        compressed_data = zlib.compress(dataread)
+        # compressed_data is ready to save now
+
+
+    # save compressed_data to BCL1 and write correct header info
+    fout = open(out, 'w+b')
+    fout.write(struct.pack('>I', 0x42434C31)) # write BCL1 magic bytes
+    fout.write(struct.pack('<H', 0x0000)) # write new CRC, unknown yet - rewrite after compression
+    fout.write(struct.pack('>H', Algorithm)) # write compression algorithm
+
+    # есть прошивки (и их много) где написано что BCL1 партиция должна быть распакована в размер, больший чем есть распакованных данных. Т.е. надо бы при распаковке дописывать нули в конец
+    # но тогда при запаковке обратно размер сжимаемых данных будет больше чем исходный размер данных
+    # поэтому распаковываем без добавления нулей а при упаковке обратно запишем бОльший размер в unpacked partition size чтобы меньше различий в байтах было с оригиналом (больше это ни на что не влияет вообще)
+    if unpacked_part_size > len(dataread):
+        fout.write(struct.pack('>I', unpacked_part_size)) # write BCL1 unpacked partition size
+    else:
+        fout.write(struct.pack('>I', len(dataread))) # write BCL1 unpacked partition size
+
+    # надо дописать к сжатым данным 00... для выравнивания по 4 байтам
+    # для всех новых прошивок или более старой версии прошивок (BCL1 + NVTPACK_FW_HDR) для самой первой партиции или для просто прошивки из одного BCL1(но не для bootloader т.к. у них вижу что нет выравнивания размера в заголовке BCL1 для packed_bytes)
+    addsize = 0
+    if (FW_HDR2 == 1) | ((FW_HDR == 1) & (part_id[part_nr] == 0)) | (FW_HDR == 0 and FW_BOOTLOADER == 0):
+        addsize = (len(compressed_data) % 4)
+        if addsize != 0:
+            addsize = 4 - addsize
+
+    fout.write(struct.pack('>I', len(compressed_data) + addsize)) # write BCL1 packed partition size
+
+    fout.write(compressed_data) # write compressed data
+
+    # добавим сколько надо 00 для выравнивания до 4 байт
+    if addsize > 0:
+        fout.write(b'\x00' * addsize)
+    fout.close()
+
+    # исправим в LZMA заголовке данные о Unpacked size - в LZMA-библиотеке python они всегда записываются как FF FF FF FF FF FF FF FF
+    # в стандарте указано что это одно 64-битное число но в старых прошивках идет дублирование 2-х 32-битных чисел (в новых прошивках это исправили - идет нормальное 64-битное значение)
+    #if Algorithm == 0x0B:
+    #    fout = open(out, 'r+b')
+    #    fout.seek(0x15, 0)
+    #    new_unpacked_size = len(dataread)
+    #    # если в оригинальном файле есть дублирование значения
+    #    if (LZMA_UncompressedSize64_Low == LZMA_UncompressedSize64_High):
+    #        if LZMA_UncompressedSize64_Low == 0xFFFFFFFF:
+    #            fout.write(struct.pack('<II', 0xFFFFFFFF, 0xFFFFFFFF)) # если в оригинале прошивки тут FFFFFFFF FFFFFFFF - запишем так же (UPD: и после этого может начать не распаковываться поэтому закомментил всё пока что)
+    #        else:
+    #            if new_unpacked_size <= 0xFFFFFFFF:
+    #               fout.write(struct.pack('<II', new_unpacked_size&0xFFFFFFFF, new_unpacked_size&0xFFFFFFFF)) # если было 2 одинаковых 32битных значения - так же запишем (пока что size прошивки не превышает 32 бита никогда)
+    #            else:
+    #               print("\033[91mFatal error while writing unpacked_size value more than 32-bit as in original FW\033[0m")
+    #               fout.close()
+    #               exit(1)
+    #    else:
+    #        fout.write(struct.pack('<II', new_unpacked_size&0xFFFFFFFF, (new_unpacked_size>>32)&0xFFFFFFFF)) # если в оригинале прошивки сделано по стандарту LZMA - 64 бита - то запишем и мы по стандарту
+    #    fout.close()
+
+    # пересчитываем CRC для BCL1-заголовка только после того как все остальное кроме CRC уже записали
+    # но не для bootloader (у них у всех прописано 00 00)
+    if FW_BOOTLOADER == 0:
+        newCRC = MemCheck_CalcCheckSum16Bit(out, 0, len(compressed_data) + addsize + 16, 0x4)
+        fout = open(out, 'r+b')
+        fout.seek(4, 0)
+        fout.write(struct.pack('<H', newCRC)) # write new CRC value
+        fout.close()
+
+
+
+# функция для отображения прогресса выполнения операций (распаковки/запаковки партиций к примеру)
+def updateProgressBar(value):
+    line = '\r\033[93m%s%%\033[0m[\033[94m%s\033[0m%s]' % ( str(value).rjust(3), '#' * round((float(value)/100) * 70), '-' * round(70 -((float(value)/100) * 70))) # 70 - длина прогресс-бара
+    print(line, end='')
+    sys.stdout.flush()
+    # чтобы сделать переход на новую строку после 100% прогресс бара
+    if value == 100:
+        print('')
+
+
+def uncompressDTB(in_file, out_filename = ''):
+    fin = open(in_file, 'rb')
+    FourCC = fin.read(4)
+    fin.close()
+
+    # check DTB magic
+    if struct.unpack('>I', FourCC)[0] == 0xD00DFEED:
+        if out_filename == '':
+            out_filename = os.path.splitext(in_file)[0] + '.dts'
+        #unpack DTB to DTS
+        os.system('dtc -qqq -I dtb -O dts ' + '\"' + in_file + '\"' + ' -o ' + '\"' + out_filename + '\"')
+    else:
+        print("\033[91mDTB marker not found, exit\033[0m")
+        sys.exit(1)
+
+
+def compressToDTB(in_file, out_filename = ''):
+    if out_filename == '':
+        out_filename = os.path.splitext(in_file)[0] + '.dtb'
+    #pack to DTB
+    os.system('dtc -qqq -I dts -O dtb ' + '\"' + in_file + '\"' + ' -o ' + '\"' + out_filename + '\"')
+
+
+def uncompress(in_offset, out_filename, size):
+    global in_file
+
+    fin = open(in_file, 'rb')
+    fin.seek(in_offset, 0)
+    FourCC = fin.read(4)
+
+
+    # FDT (DTB)
+    if struct.unpack('>I', FourCC)[0] == 0xD00DFEED:
+        #extract FDT partition to tempfile
+        fin.seek(in_offset, 0)
+        finread = fin.read(size)
+        fin.close()
+        fpartout = open(out_filename + '_tempfile', 'w+b')
+        fpartout.write(finread)
+        fpartout.close()
+        
+        #unpack DTB to DTS
+        os.system('dtc -qqq -I dtb -O dts ' + '\"' + out_filename + '_tempfile' + '\"' + ' -o ' + '\"' + out_filename + '\"')
+        
+        # delete tempfile
+        os.system('rm -rf ' + '\"' + out_filename + '_tempfile' + '\"')
+        return
+
+
+    if FourCC == b'BCL1':
+        fin.close()
+        BCL1_uncompress(in_offset, out_filename)
+        return
+
+    if FourCC == b'UBI#':
+        #create dir with similar name as for other parttition types
+        os.system('sudo rm -rf ' + '\"' + out_filename + '\"')
+        os.system('mkdir ' + '\"' + out_filename + '\"')
+
+        #extract UBI partition to tempfile
+        fin.seek(in_offset, 0)
+        finread = fin.read(size)
+        fin.close()
+        fpartout = open(out_filename + '/tempfile', 'w+b')
+        fpartout.write(finread)
+        fpartout.close()
+
+        #unpack UBIFS to created dir
+        os.system('sudo ubireader_extract_files -k -i -f ' + '-o ' + '\"' + out_filename + '\"' + ' ' + '\"' + out_filename + '/tempfile' + '\"')
+
+        # delete tempfile
+        os.system('rm -rf ' + '\"' + out_filename + '/tempfile' + '\"')
+        return
+
+    # SPARSE EXT4
+    if struct.unpack('>I', FourCC)[0] == 0x3AFF26ED:
+        #create dir with similar name as for other parttition types
+        subprocess.run('umount -q -d -f ' + '\"' + out_filename + '/mount' + '\"', shell=True)
+        os.system('rm -rf ' + '\"' + out_filename + '\"')
+        os.system('mkdir ' + '\"' + out_filename + '\"')
+        os.system('mkdir ' + '\"' + out_filename + '/mount' + '\"') # subdir for mounting ext4
+
+        #extract SPARSE EXT4 partition to tempfile
+        fin.seek(in_offset, 0)
+        finread = fin.read(size)
+        fin.close()
+        fpartout = open(out_filename + '/tempfile', 'w+b')
+        fpartout.write(finread)
+        fpartout.close()
+
+        # convert SPARSE to ext4
+        subprocess.run('simg2img ' + '\"' + out_filename + '/tempfile' + '\"' + ' ' + '\"' + out_filename + '/tempfile.ext4' + '\"', shell=True)
+
+        # mount ext4 to folder
+        os.system('mount ' + '\"' + out_filename + '/tempfile.ext4' + '\"' + ' ' + '\"' + out_filename + '/mount' + '\"')
+
+        # удалим tempfile, tempfile.ext4 нам еще нужен будет для сборки обратно
+        os.system('rm -rf ' + '\"' + out_filename + '/tempfile' + '\"')
+        return
+
+    # SquashFS
+    if struct.unpack('>I', FourCC)[0] == 0x73717368 or struct.unpack('>I', FourCC)[0] == 0x68737173:
+        #create dir with similar name as for other parttition types
+        os.system('rm -rf ' + '\"' + out_filename + '\"')
+        os.system('mkdir ' + '\"' + out_filename + '\"')
+        os.system('mkdir ' + '\"' + out_filename + '/mount' + '\"') # subdir for mounting squashfs
+
+        #extract partition to tempfile
+        fin.seek(in_offset, 0)
+        finread = fin.read(size)
+        fin.close()
+        fpartout = open(out_filename + '/tempfile', 'w+b')
+        fpartout.write(finread)
+        fpartout.close()
+
+        # unpack squashfs to folder
+        os.system('sudo unsquashfs -q -n -f -d ' + '\"' + out_filename + '/mount' + '\"' + ' ' + '\"' + out_filename + '/tempfile' + '\"')
+
+        # удаляем tempfile
+        os.system('rm -rf ' + '\"' + out_filename + '/tempfile' + '\"')
+        return
+
+    # MODELEXT
+    MODELEXT_SIZE = struct.unpack('<I', FourCC)[0]
+    MODELEXT_TYPE = struct.unpack('<I', fin.read(4))[0]
+    MODELEXT_NUMBER = struct.unpack('<I', fin.read(4))[0]
+    MODELEXT_VERSION = struct.unpack('<I', fin.read(4))[0]
+    if (MODELEXT_TYPE == 1) and (MODELEXT_VERSION == 0x16072219) and (str(struct.unpack('8s', fin.read(8))[0])[2:-1] == 'MODELEXT'):
+        fin.seek(-8, 1) # seek back to 'MODELEXT' text start
+        data = fin.read(MODELEXT_SIZE - 16) # -16 bytes of header
+        type_str = ''
+
+        while(1):
+            if MODELEXT_TYPE == 1:
+                type_str = '_INFO'
+            if MODELEXT_TYPE == 2:
+                type_str = '_BIN_INFO'
+            if MODELEXT_TYPE == 3:
+                type_str = '_PINMUX_CFG'
+            if MODELEXT_TYPE == 4:
+                type_str = '_INTDIR_CFG'
+            if MODELEXT_TYPE == 5:
+                type_str = '_EMB_PARTITION'
+            if MODELEXT_TYPE == 6:
+                type_str = '_GPIO_INFO'
+            if MODELEXT_TYPE == 7:
+                type_str = '_DRAM_PARTITION'
+            if MODELEXT_TYPE == 8:
+                type_str = '_MODEL_CFG'
+            if type_str == '':
+                return
+
+            print('Save \033[93m%s\033[0m sub-partition' %(type_str[1:]))
+            fpartout = open(out_filename + '_' + str(MODELEXT_TYPE) + type_str, 'w+b')
+            fpartout.write(data)
+            fpartout.close()
+
+            MODELEXT_SIZE = struct.unpack('<I', fin.read(4))[0]
+            MODELEXT_TYPE = struct.unpack('<I', fin.read(4))[0]
+            MODELEXT_NUMBER = struct.unpack('<I', fin.read(4))[0]
+            MODELEXT_VERSION = struct.unpack('<I', fin.read(4))[0]
+            type_str = ''
+            data = fin.read(MODELEXT_SIZE - 16) # -16 bytes of header
+        return
+
+    print("\033[91mOnly FDT(DTB), BCL1, UBI, SPARSE, SquashFS and MODELEXT partitions is supported now, exit\033[0m")
+    fin.close()
+
+
+# BCL1 header 16 bytes len:
+# "BCL1" marker
+# 2 bytes - CRC
+# 2 bytes in BE - compression algo
+# 4 bytes in BE - uncompressed partition size (can be appended with leading zeroes after uncompressed data)
+# 4 bytes in BE - compressed partition size
+def BCL1_uncompress(in_offset, out_filename):
+    global in_file
+
+
+    fin = open(in_file, 'rb')
+
+    # check BCL1 marker at start of partition    
+    fin.seek(in_offset, 0)
+    FourCC = fin.read(4)
+    if FourCC != b'BCL1':
+        print("\033[91mBCL1 marker not found, exit\033[0m")
+        sys.exit(1)
+
+    # check compression algo
+    fin.read(2)
+    Algorithm = struct.unpack('>H', fin.read(2))[0]
+    if (Algorithm != 0x09) & (Algorithm != 0x0B) & (Algorithm != 0x0C):
+        print("\033[91mCompression algo %0X is not supported\033[0m" % Algorithm)
+        sys.exit(1)
+
+
+    fout = open(out_filename, 'w+b')
+
+    outsize = struct.unpack('>I', fin.read(4))[0]
+    insize = struct.unpack('>I', fin.read(4))[0]
+
+    in_offset = in_offset + 0x10 #skip BCL1 header
+    fin.seek(in_offset, 0)
+
+    # LZ77 uncompress
+    if Algorithm == 0x09:
+        # Get marker symbol from input stream
+        marker = struct.unpack('B', fin.read(1))[0]
+        #print("LZ marker = 0x%0X" % marker)
+
+        inpos = 1
+        outputbuf = bytearray()
+
+        # для замеров скорости выполнения
+        #startT = datetime.now()
+        # для вывода прогресса работы
+        #oldcurrprogress = 0
+        
+        # Main uncompression loop
+        outpos = 0
+        while((inpos < insize) & (outpos < outsize)):
+            symbol = struct.unpack('B', fin.read(1))[0]
+            inpos += 1
+    
+            if symbol == marker:
+                # We had a marker byte
+                readbyte = struct.unpack('B', fin.read(1))[0]
+                if readbyte == 0:
+                    # It was a single occurrence of the marker byte
+                    ##fout.write(struct.pack('B', marker))
+                    outputbuf.append(marker)
+                    outpos += 1
+                    inpos += 1
+                else:
+                    # Extract true length and offset
+                    #print("curr file offset = 0x%0x" % (in_offset + inpos))
+                    #inpos += lz_read_var_size( &length, &in[ inpos ] );
+                    #=================================================
+                    y = 0
+                    num_bytes = 0
+                    
+                    b = readbyte
+                    y = (y << 7) | (b & 0x0000007f)
+                    num_bytes += 1
+                    
+                    while (b & 0x00000080) != 0:
+                        b = struct.unpack('B', fin.read(1))[0]
+                        y = (y << 7) | (b & 0x0000007f)
+                        num_bytes += 1
+    
+                    length = y
+                    inpos += num_bytes
+                    #print("length = 0x%0x" % (length))
+                    #=================================================
+                    
+                    #inpos += lz_read_var_size( &offset, &in[ inpos ] );
+                    #=================================================
+                    y = 0
+                    num_bytes = 0
+                    
+                    b = struct.unpack('B', fin.read(1))[0]
+                    y = (y << 7) | (b & 0x0000007f)
+                    num_bytes += 1
+                    
+                    while (b & 0x00000080) != 0:
+                        b = struct.unpack('B', fin.read(1))[0]
+                        y = (y << 7) | (b & 0x0000007f)
+                        num_bytes += 1
+    
+                    offset = y
+                    inpos += num_bytes
+                    #print("offset = 0x%0x" % (offset))
+                    #=================================================
+    
+                    # Copy corresponding data from history window
+                    #out[ outpos ] = out[ outpos - offset ];
+                    for i in range(length):
+                        ##fout.seek(outpos - offset, 0)
+                        ##out = struct.unpack('B', fout.read(1))[0]
+                        ##fout.seek(outpos, 0)
+                        ##fout.write(struct.pack('B', out))
+                        outputbuf.append(outputbuf[outpos - offset])
+                        outpos += 1
+            else:
+                # No marker, plain copy
+                ##fout.write(struct.pack('B', symbol))
+                outputbuf.append(symbol)
+                outpos += 1
+
+            # вывод прогресса работы упаковщика
+            #currprogress = round(inpos/insize*100)
+            #if currprogress > oldcurrprogress:
+            #    updateProgressBar(currprogress)
+            #    oldcurrprogress = currprogress
+
+        fout.write(outputbuf)
+        # add zero bytes to make same output size that was decleared in BCL1 header
+        # commented due extend partition size then compressing back more data than need
+        #append_size = outsize - len(outputbuf)
+        #if append_size > 0:
+        #    fout.write(b'\x00' * append_size)
+        fin.close()
+        fout.close()
+
+        #endT = datetime.now()
+        #print("elapsed: %s" % str(endT - startT))
+
+
+    # LZMA uncompress
+    if Algorithm == 0x0B:
+        dataread = fin.read(insize)
+        fin.close()
+        
+        decompress = decompress_lzma(dataread)[:outsize]
+        fout.write(decompress)
+        # add zero bytes to make same output size that was decleared in BCL1 header as BCL1 unpacked size (outsize)
+        # commented due extend partition size then compressing back more data than need
+        #append_size = outsize - len(decompress)
+        #if append_size > 0:
+        #    fout.write(b'\x00' * append_size)
+        fout.close()
+
+
+    # ZLIB uncompress
+    if Algorithm == 0x0C:
+        dataread = fin.read(insize)
+        fin.close()
+        
+        decompress = zlib.decompress(dataread)
+        # add zero bytes to make same output size that was decleared in BCL1 header
+        # commented due extend partition size then compressing back more data than need
+        #append_size = outsize - len(decompress)
+        #if append_size > 0:
+        #    fout.write(b'\x00' * append_size)
+        fout.write(decompress)
+        fout.close()
+
+    # выведем немного информации о распакованной BCL1 партиции
+    fin = open(out_filename, 'rb')
+    dataread = bytearray(fin.read())
+    fin.close()
+
+    if (dataread[0x6C] == 0xFF) & (dataread[0x6D] == 0xFF) & (dataread[0x46C] == 0x55) & (dataread[0x46D] == 0xAA):
+        print('Partition data: Name="\033[93m%s\033[0m", Date="\033[93m%s\033[0m", Size=%s, CRC Offset=\033[93m0x%04X\033[0m, CRC=\033[93m0x%04X\033[0m' % (str(struct.unpack('8s',dataread[0x450:0x458])[0])[2:-1].replace('\\x00',''), str(struct.unpack('8s',dataread[0x460:0x468])[0])[2:-1], '\033[93m{:,}\033[0m'.format(struct.unpack('<I', dataread[0x468:0x46C])[0]), 0x46E, struct.unpack('<H', dataread[0x46E:0x470])[0]))
+    else:
+        if (dataread[0x6C] == 0x55) & (dataread[0x6D] == 0xAA):
+            print('Partition data: Name="\033[93m%s\033[0m", Date="\033[93m%s\033[0m", Size=%s, CRC Offset=\033[93m0x%04X\033[0m, CRC=\033[93m0x%04X\033[0m' % (str(struct.unpack('8s',dataread[0x50:0x58])[0])[2:-1].replace('\\x00',''), str(struct.unpack('8s',dataread[0x60:0x68])[0])[2:-1], '\033[93m{:,}\033[0m'.format(struct.unpack('<I', dataread[0x68:0x6C])[0]), 0x6E, struct.unpack('<H', dataread[0x6E:0x70])[0]))
+        else:
+            if (dataread[0x16C] == 0x55) & (dataread[0x16D] == 0xAA):
+                print('Partition with 0x100 data at begin')
+                print('Header Info at 0x100: Name="\033[93m%s\033[0m", Date="\033[93m%s\033[0m", Size=%s, CRC Offset=\033[93m0x%04X\033[0m, CRC=\033[93m0x%04X\033[0m, Load Address=\033[93m0x%08X\033[0m' % (str(struct.unpack('8s',dataread[0x150:0x158])[0])[2:-1].replace('\\x00',''), str(struct.unpack('8s',dataread[0x160:0x168])[0])[2:-1], '\033[93m{:,}\033[0m'.format(struct.unpack('<I', dataread[0x168:0x16C])[0]), 0x16E, struct.unpack('<H', dataread[0x16E:0x170])[0], struct.unpack('<I', dataread[0x100:0x104])[0]))
+            else:
+                # для задней камеры на NTK96562A (от Viofo A229 Pro) появилось вот такое ещё условие
+                if (dataread[0x26C] == 0x55) & (dataread[0x26D] == 0xAA):
+                    print('Partition with 0x200 data at begin')
+                    print('Header Info at 0x200: Name="\033[93m%s\033[0m", Date="\033[93m%s\033[0m", Size=%s, CRC Offset=\033[93m0x%04X\033[0m, CRC=\033[93m0x%04X\033[0m, Load Address=\033[93m0x%08X\033[0m' % (str(struct.unpack('8s',dataread[0x250:0x258])[0])[2:-1].replace('\\x00',''), str(struct.unpack('8s',dataread[0x260:0x268])[0])[2:-1], '\033[93m{:,}\033[0m'.format(struct.unpack('<I', dataread[0x268:0x26C])[0]), 0x26E, struct.unpack('<H', dataread[0x26E:0x270])[0], struct.unpack('<I', dataread[0x200:0x204])[0]))
+                else:
+                    print('Partition data without CRC')
+
+
+
+
+# use for lzma exception workaround
+# see at https://stackoverflow.com/questions/37400583/python-lzma-compressed-data-ended-before-the-end-of-stream-marker-was-reached
+def decompress_lzma(data):
+    results = []
+    while True:
+        decomp = lzma.LZMADecompressor(lzma.FORMAT_ALONE, None, None)
+        try:
+            res = decomp.decompress(data)
+        except lzma.LZMAError:
+            if results:
+                break  # Leftover data is not a valid LZMA/XZ stream; ignore it.
+            else:
+                raise  # Error on the first iteration; bail out.
+        results.append(res)
+        data = decomp.unused_data
+        if not data:
+            break
+        if not decomp.eof:
+            raise lzma.LZMAError("Compressed data ended before the end-of-stream marker was reached")
+    return b"".join(results)
+
+
+def fillIDPartNames(startat):
+    global in_file
+    
+    if (len(dtbpart_ID) > 0 and len(dtbpart_name) > 0 and len(dtbpart_filename) > 0):
+        # print('DTB was parsed early, skip adding a same names from fdt.backup')
+        return
+    
+    fin = open(in_file, 'r+b')
+    fin.seek(startat+0x34, 0)
+
+    # TODO можно улучшить код, парся номера id не предполагая что они всегда идут по инкременту
+    increment_ID = 0
+    # -----начали секцию----
+    starting = struct.unpack('>I', fin.read(4))[0] #00000001
+    while(starting == 0x00000001):
+        #вычисляем длину id
+        id_length = 0
+        t = struct.unpack('B', fin.read(1))[0]
+        while(t != 0x00):
+            id_length+=1
+            t = struct.unpack('B', fin.read(1))[0]
+        #print(id_length)
+        fin.seek(-1*(id_length+1), 1) # вернемся на начало имени id
+        # считаем idx
+        id_textname = str(struct.unpack('%ds' % (id_length), fin.read(id_length))[0])[4:-1] # отрезает b` ` и еще текст "id" перед цифрой
+        #print(id_textname)
+        dtbpart_ID.append(id_textname)
+        fin.read(4 - (id_length%4)) # дочитываем все 00 которые нужны для выравнивания по 4 байта
+        
+        fin.read(4) #00000003
+        lengthname = struct.unpack('>I', fin.read(4))[0] # с учетом \0 в конце имени
+        fin.read(4) #000002xx
+        shortname = str(struct.unpack('%ds' % (lengthname-1), fin.read(lengthname-1))[0])[2:-1] # отрезает b` `
+        #print(shortname)
+
+        # если считанный id не идёт по-очереди (есть пропуск в нумерации) то для всех пропущенных id добавим пустое имя
+        while (id_textname != str(increment_ID)):
+            dtbpart_name.append('')
+            increment_ID += 1
+
+        dtbpart_name.append(shortname)
+        if lengthname > 1:
+            fin.read(4 - ((lengthname-1)%4)) # дочитываем все 00 которые нужны для выравнивания по 4 байта (у ARM64 такое же выравнивание в fdt)
+        else:
+            fin.read(4) # если имени нет то дочитываются все 4 байта
+        
+        fin.read(4) #00000003
+        lengthfilename = struct.unpack('>I', fin.read(4))[0] # с учетом \0 в конце имени
+        fin.read(4) #00000232
+        filename = str(struct.unpack('%ds' % (lengthfilename-1), fin.read(lengthfilename-1))[0])[2:-1] # отрезает b` `
+        #print(filename)
+        dtbpart_filename.append(filename)
+        if lengthfilename > 1:
+            fin.read(4 - ((lengthfilename-1)%4)) # дочитываем все 00 которые нужны для выравнивания по 4 байта
+        else:
+            fin.read(4) # если имени нет то дочитываются все 4 байта
+        
+        fin.read(4) #00000002
+        # -----закончили секцию----
+
+        increment_ID += 1
+        starting = struct.unpack('>I', fin.read(4))[0] #00000001
+    
+    fin.close()
+    
+    
+'''
+def SearchPartNamesInDTB(partitions_count):
+    global in_file
+    alreadyfound = 0
+    
+    for a in range(partitions_count):
+        if part_type[a] == 'device tree blob (dtb)':
+            fin = open(in_file, 'r+b')
+            fin.seek(part_startoffset[a], 0)
+            dtbfile = fin.read(part_size[a])
+            fin.close()
+            startat = dtbfile.find(b'NVTPACK_FW_INI_16072017')
+
+            if startat != -1:
+                #print("0x%0X" % startat)
+                if alreadyfound == 0:
+                    fillIDPartNames(part_startoffset[a] + startat)
+                    alreadyfound = 1 # чтобы снова не добавлять инфу из следующих партиций навроде fdt.restore
+'''
+
+
+
+
+def GetPartitionInfo(start_offset, part_size, partID, addinfo = 1):
+    global in_file
+    global is_ARM64
+    global FW_BOOTLOADER
+
+    # TODO можно улучшить код, считывая весь размер part_size и ища magic_bytes только в его границах - будет быстрее чем seek() по файлу и правильнее(не будем выходить за партицию при поиске байт)
+    # проверим не выйдем ли мы за границу файла при чтении партиции
+    if (start_offset + part_size) > os.stat(in_file).st_size or part_size < 4: # 4 это как минимум-минимум
+        if addinfo:
+            part_type.append('\033[91mbad size partition\033[0m')
+            part_crc.append(0)
+            part_crcCalc.append(0)
+        return '', 0
+
+    fin = open(in_file, 'rb')
+    # go to partition start offset
+    fin.seek(start_offset, 0)
+    partfirst4bytes = struct.unpack('>I', fin.read(4))[0]
+
+
+    # dtb
+    if partfirst4bytes == 0xD00DFEED:
+        temp_parttype = '\033[93mDTB\033[0m device tree blob'
+        CRC = 0
+        if addinfo:
+            part_type.append(temp_parttype)
+            part_crc.append(0)
+            part_crcCalc.append(CRC)
+
+            # перенес сюда получение названий партиций
+            fin.seek(start_offset, 0)
+            dtbfile = fin.read(part_size)
+            startat = dtbfile.find(b'NVTPACK_FW_INI_' + NVTPACK_VER) # b'16072017'
+            if startat != -1:
+                fillIDPartNames(start_offset + startat)
+
+            fin.close()
+        return temp_parttype, CRC
+
+
+    # atf = ARM Trusted Firmware-A
+    if len(dtbpart_name) > partID and str(dtbpart_name[partID]).lower() == 'atf':
+        temp_parttype = 'ARM Trusted Firmware'
+        CRC = 0
+        if addinfo:
+                part_type.append(temp_parttype)
+                part_crc.append(0)
+                part_crcCalc.append(CRC)
+                fin.close()
+        return temp_parttype, CRC
+
+
+    # Master Boot Record
+    # defined by: 512 bytes size, 0x55AA at 0x1FE-0x1FF and at 0x1BC-0x1BD -> 0x0000 or 0x5A5A
+    # 0x0 -0x1B7 ->MBR code area (440 bytes)
+    # 0x1B8-0x1BB ->32-bit disk signature (optional 4 bytes)
+    # 0x1BC-0X1BD -> 0x0000 or 0x5A5A (2 bytes)
+    # 0x1BE-0x1FD -> Table of primary partitions (4*16 bytes)
+    # 0x1FE-0x1FF -> MBR signature 0X55AA (2 bytes)
+    #if len(dtbpart_name) > partID and str(dtbpart_name[partID]).lower()[:3] == 'mbr': # а для 0 партиции не будет имени т.к. fdt партиция идёт ниже и пока она еще не распарсилась и не получили имена партиций
+    if part_size == 512:
+        fin.seek(0x1FE - 4, 1)
+        mbrsigbytes = struct.unpack('>H', fin.read(2))[0]
+        fin.seek(-0x44, 1) # seek back to 0x1BC offset
+        twobytes = struct.unpack('>H', fin.read(2))[0]
+        if (twobytes == 0x0000 or twobytes == 0x5A5A) and (mbrsigbytes == 0x55AA):
+            temp_parttype = 'MBR'
+            CRC = 0
+
+            # read info from MBR partition table (4 records, 16 bytes each, Little-endian)
+            # 0x0 - Bootable flag (0x80 - bootable | 0x00 - non-bootable | 0x01-0x07 - Invalid)
+            # 0x01-0x03 - CHS address of the starting of partition in hard disk
+            # 0x04 - Partition type (0x83 - Linux, 0x05 - Extended, ...)
+            # 0x05-0x07 - CHS address of the end of partition in hard disk
+            # 0x08-0x0B - LBA of first sector in the partition
+            # 0x0C-0x0F - Number of sectors in partition
+            MBR_partitions = 0
+            for n in range(4):
+                if fin.read(16) != b'\x00'*16: # если 16 байт не нулевые то есть инфо о партиции
+                    MBR_partitions += 1
+
+            if MBR_partitions > 0:
+                temp_parttype += ' with ' + str(MBR_partitions)
+                if MBR_partitions == 1:
+                    temp_parttype += ' record'
+                else:
+                    temp_parttype += ' records'
+
+            if addinfo:
+                part_type.append(temp_parttype)
+                part_crc.append(0)
+                part_crcCalc.append(CRC)
+                fin.close()
+            return temp_parttype, CRC
+        else:
+            fin.seek(start_offset + 4, 0) # seek back to file position right after partfirst4bytes was read
+
+
+    # uImage header
+        #https://github.com/EmcraftSystems/u-boot/blob/master/include/image.h
+        #Legacy format image header,
+        #all data in network byte order (aka natural aka bigendian).
+        # 
+        ##define IH_MAGIC	0x27051956	/* Image Magic Number		*/
+        ##define IH_NMLEN		32		/* Image Name Length		*/
+        #
+        #typedef struct image_header {
+        #	uint32_t	ih_magic;	/* Image Header Magic Number	*/
+        #	uint32_t	ih_hcrc;	/* Image Header CRC Checksum	*/
+        #	uint32_t	ih_time;	/* Image Creation Timestamp		*/
+        #	uint32_t	ih_size;	/* Image Data Size				*/
+        #	uint32_t	ih_load;	/* Data	 Load  Address			*/
+        #	uint32_t	ih_ep;		/* Entry Point Address			*/
+        #	uint32_t	ih_dcrc;	/* Image Data CRC Checksum		*/
+        #	uint8_t		ih_os;		/* Operating System		*/
+        #	uint8_t		ih_arch;	/* CPU architecture		*/
+        #	uint8_t		ih_type;	/* Image Type			*/
+        #	uint8_t		ih_comp;	/* Compression Type		*/
+        #	uint8_t		ih_name[IH_NMLEN];	/* Image Name	*/
+        #} image_header_t;
+        #
+        #       27 05 19 56		/* Image Magic Number		*/	#define IH_MAGIC	0x27051956
+        #		5C 0D F3 82		/* Image Header CRC Checksum*/	header CRC: 0x5C0DF382
+        #		62 B4 60 B7		/* Image Creation Timestamp	*/	created: 2022-06-23 12:46:47
+        #		00 2C B0 50		/* Image Data Size			*/  размер данных в этой партиции (0x2CB050 + 0x40(header size) = 0x2CB090(partition size))
+        #		00 00 80 00		/* Data	 Load  Address		*/
+        #		00 00 80 00		/* Entry Point Address		*/
+        #		5A 34 64 C3		/* Image Data CRC Checksum	*/	data CRC: 0x5A3464C3
+        #		05				/* Operating System			*/	#define IH_OS_LINUX		5	/* Linux	*/
+        #		02				/* CPU architecture			*/	#define IH_ARCH_ARM		2	/* ARM		*/
+        #		02				/* Image Type				*/	#define IH_TYPE_KERNEL	2	/* OS Kernel Image		*/
+        #		00				/* Compression Type			*/	#define IH_COMP_NONE	0	/* No Compression Used	*/
+        #		Linux-4.19.91	/* Image Name				*/
+        #
+        # ONLY for ih_type = 4 ('Multi-File Image'):
+        # Next goes list of Image sizes:
+        #   uint32_t   sizeof_uImage1 (rounded up to a multiple of 4 bytes)
+        #   ...
+        #   00 00 00 00 end of sizeof list marker
+        #
+    if partfirst4bytes == 0x27051956:
+        temp_parttype = 'uImage'
+        MultiFileImage_content = ''
+
+        fin.seek(start_offset + 24, 0)
+        # Image Data CRC
+        image_data_CRC = struct.unpack('>I', fin.read(4))[0]
+
+        # Operating System
+        temp = struct.unpack('B', fin.read(1))[0]
+        if temp in uImage_os:
+            temp_parttype += ', OS: ' + '\"\033[93m' + uImage_os[temp] + '\033[0m\"'
+
+        # CPU architecture
+        #fin.seek(part_offset[2] + 29, 0)
+        found_ARM64 = 0
+        temp = struct.unpack('B', fin.read(1))[0]
+        if temp in uImage_arch:
+            temp_parttype += ', CPU: ' + '\"\033[93m' + uImage_arch[temp] + '\033[0m\"'
+            # check for ARM64 architecture to use favor_lzo compr algo in UBI partitions
+            if (temp == 22): # and uImage_arch[temp] == 'ARM64'
+                found_ARM64 = 1
+
+        # Image Type
+        #fin.seek(part_offset[2] + 30, 0)
+        temp = struct.unpack('B', fin.read(1))[0]
+        if temp in uImage_imagetype:
+            temp_parttype += ', Image type: ' + '\"\033[93m' + uImage_imagetype[temp] + '\033[0m\"'
+
+            # for favor_lzo in UBI
+            if(temp == 2 and found_ARM64 == 1): # if uImage_os[temp] == 'OS Kernel Image':
+                is_ARM64 = 1
+            
+            # 4 : 'Multi-File Image' For this type we need to parse all uImages data
+            if temp == 4:
+                currpos = fin.tell()
+                fin.seek(start_offset + 64, 0)
+                temp = struct.unpack('>I', fin.read(4))[0]
+                MultiFileImage_amount = 0
+                MultiFileImage_content = os.linesep + 'Contents:' + os.linesep
+                while(temp != 0):
+                    MultiFileImage_amount += 1
+                    MultiFileImage_content += 'Image ' + str(MultiFileImage_amount) + ': ' + '{:,}'.format(temp) + ' bytes' + os.linesep
+
+                fin.seek(currpos, 0) # back to previous read pos
+
+        # Compression Type
+        #fin.seek(part_offset[2] + 31, 0)
+        temp = struct.unpack('B', fin.read(1))[0]
+        if temp in uImage_compressiontype:
+            temp_parttype += ', Compression type: ' + '\"\033[93m' + uImage_compressiontype[temp] + '\033[0m\"'
+
+        # Image Name
+        #fin.seek(part_offset[2] + 32, 0)
+        temp_parttype += ', Image name: ' + '\"\033[93m' + str(fin.read(32)).replace("\\x00","")[2:-1] + '\033[0m\"' #[2:-1] for remove b' at start and ' at end and \x00 after name
+
+
+        fin.seek(start_offset + 4, 0)
+        # Image Header CRC
+        image_header_CRC = struct.unpack('>I', fin.read(4))[0]
+
+        # Image Creation Timestamp
+        temp = struct.unpack('>I', fin.read(4))[0]
+        temp_parttype += ', created: ' + '\"\033[93m' + datetime.fromtimestamp(temp, timezone.utc).strftime('%Y-%m-%d %H:%M:%S') + '\033[0m\"'
+
+        # Image Data Size
+        temp = struct.unpack('>I', fin.read(4))[0]
+        temp_parttype += ', size: ' + '\"\033[93m{:,}\033[0m\" bytes'.format(temp)
+
+        # Image Header CRC and Image Data CRC
+        temp_parttype += ', HeaderCRC: \"\033[93m0x%08X\033[0m\"' % image_header_CRC
+        temp_parttype += ', DataCRC: \"\033[93m0x%08X\033[0m\"' % image_data_CRC
+
+        # print contents for Multi-File Images type
+        if MultiFileImage_content != '':
+            temp_parttype += MultiFileImage_content
+
+        CRC = 0
+        if addinfo:
+            part_type.append(temp_parttype)
+            part_crc.append(0)
+            part_crcCalc.append(CRC)
+            fin.close()
+        return temp_parttype, CRC
+
+
+    # Compressed ext4 file system SPARSE image format - бывает находится внутри CKSM
+    if partfirst4bytes == 0x3AFF26ED:
+        temp_parttype = '\033[93mSPARSE EXT4 image\033[0m'
+        CRC = 0
+
+        if addinfo:
+                part_type.append(temp_parttype)
+                part_crc.append(0)
+                part_crcCalc.append(CRC)
+                fin.close()
+        return temp_parttype, CRC
+
+
+    # BCL1
+    if partfirst4bytes == 0x42434C31:
+        temp_parttype = '\033[93mBCL1\033[0m'
+
+        uiChkValue = struct.unpack('<H', fin.read(2))[0] # CRC
+
+        # compression algo
+        compressAlgo = struct.unpack('>H', fin.read(2))[0]
+        if compressAlgo in compressAlgoTypes:
+            temp_parttype += '[\033[93m' + compressAlgoTypes[compressAlgo] + '\033[0m]'
+        else:
+            temp_parttype += '[\033[91mcompr.algo:0x%0X\033[0m' % compressAlgo + ']' # if compression algo is unknown
+
+        BCL1unpackedSize = struct.unpack('>I', fin.read(4))[0]
+        BCL1packedSize = struct.unpack('>I', fin.read(4))[0]
+        temp_parttype += ' \033[93m{:,}\033[0m'.format(BCL1unpackedSize) + ' packed to ' + '\033[93m{:,}\033[0m bytes'.format(BCL1packedSize)
+
+        CRC = MemCheck_CalcCheckSum16Bit(in_file, start_offset, BCL1packedSize + 0x10, 0x4) # 0x10 - BCL1 header size
+
+        # у всех виденных мною загрузчиков только 1 партиция BCL1 и у неё вместо CRC прописано 0000 поэтому для неё не показываем расчитанную CRC чтобы не смущать пользователя их вечным несоответствием
+        if FW_BOOTLOADER == 1:
+            CRC = 0
+
+        if addinfo:
+            part_type.append(temp_parttype)
+            part_crc.append(uiChkValue)
+            part_crcCalc.append(CRC)
+            fin.close()
+        return temp_parttype, CRC
+
+
+    # UBI#
+    if partfirst4bytes ==  0x55424923:
+        temp_parttype = '\033[93mUBI\033[0m'
+
+        # get UBI volume name
+        # чтобы не вызывать лишних команд и не делать временные файлы (т.к. ubireader не умеет работать с данными напрямую а лишь с файлами)
+        # делаем проще - от UBI# + 0x1010 и там лежит имя Volume
+        fin.seek(0x100C, 1)
+        # считываем имя, идя до \00
+        #вычисляем длину имени
+        id_length = 0
+        t = struct.unpack('B', fin.read(1))[0]
+        while(t != 0x00):
+            id_length += 1
+            t = struct.unpack('B', fin.read(1))[0]
+        #print(id_length)
+        fin.seek(-1*(id_length+1), 1) # вернемся на начало имени id
+        # считаем имя
+        UBIname = str(struct.unpack('%ds' % (id_length), fin.read(id_length))[0])[2:-1] #отрезает b` `
+        # добавим считанное
+        temp_parttype += ' \"\033[93m' + UBIname + '\033[0m\"'
+        CRC = 0
+
+        if addinfo:
+            part_type.append(temp_parttype)
+            part_crc.append(0)
+            part_crcCalc.append(CRC)
+            fin.close()
+        return temp_parttype, CRC
+
+
+    # CKSM - внутри могут быть UBI or BCL1 or ...
+    if partfirst4bytes == 0x434B534D:
+        if struct.unpack('<I', fin.read(4))[0] == NVTPACK_CHKSUM_HDR_VERSION:
+            uiChkMethod = struct.unpack('<I', fin.read(4))[0] # 0 - т.е. CRC16
+            uiChkValue = struct.unpack('<I', fin.read(4))[0] # само значение CRC16
+            uiDataOffset = struct.unpack('<I', fin.read(4))[0] # стандарно тут 0x40 (64 байта на CKSM заголовок)
+            uiDataSize = struct.unpack('<I', fin.read(4))[0] # размер данных внутри CKSM
+            uiPaddingSize = struct.unpack('<I', fin.read(4))[0]
+            uiEmbType = struct.unpack('<I', fin.read(4))[0]
+
+            temp_parttype = '\033[93mCKSM\033[0m'
+            # как оказалось везде проставлен один тип 09=UBIFS - даже если внутри CKSM лежит BCL1
+            if uiEmbType in embtypes:
+                temp_parttype += ' ' + embtypes[uiEmbType]
+            else:
+                temp_parttype += ' \033[91munkEmbType\033[0m' # unknown embedded type of data
+
+            # смотрим что внутри CKSM
+            deeppart, calcCRC = GetPartitionInfo(start_offset + uiDataOffset, uiDataSize + uiPaddingSize, partID, 0) # внетренние данные не считаем за отдельную партицию поэтому 0
+            if deeppart != '':
+                temp_parttype += '\033[94m<--\033[0m' + deeppart
+
+            CRC = MemCheck_CalcCheckSum16Bit(in_file, start_offset, uiDataOffset + uiDataSize + uiPaddingSize, 0xC)
+
+            if addinfo:
+                part_type.append(temp_parttype)
+                part_crc.append(uiChkValue)
+                part_crcCalc.append(CRC)
+                fin.close()
+            return temp_parttype, CRC
+        else:
+            fin.seek(-4, 1) # seek back
+
+
+    # SquashFS - Little endian (73 71 73 68 or "hsqs") or Big endian (68 73 71 73 or "sqsh")
+    if partfirst4bytes == 0x73717368 or partfirst4bytes == 0x68737173:
+        temp_parttype = '\033[93mSquashFS'
+
+        inodeCount = struct.unpack('<I', fin.read(4))[0]
+        modificationTime = struct.unpack('<I', fin.read(4))[0]
+        blockSize = struct.unpack('<I', fin.read(4))[0]
+        fragmentCode = struct.unpack('<I', fin.read(4))[0]
+        compressionID = struct.unpack('<H', fin.read(2))[0]
+        blockLog = struct.unpack('<H', fin.read(2))[0]
+        flags = struct.unpack('<H', fin.read(2))[0]
+        idCount = struct.unpack('<H', fin.read(2))[0]
+
+        # squashFS version
+        majorVersion = struct.unpack('<H', fin.read(2))[0]
+        minorVersion = struct.unpack('<H', fin.read(2))[0]
+        temp_parttype += '(' + str(majorVersion) + '.' + str(minorVersion) + ')\033[0m'
+
+        # squashFS compression method
+        if compressionID == 1:
+            temp_parttype += '[\033[93mzlib\033[0m]'
+        if compressionID == 2:
+            temp_parttype += '[\033[93mLZMA\033[0m]'
+        if compressionID == 3:
+            temp_parttype += '[\033[93mLZO\033[0m]'
+        if compressionID == 4:
+            temp_parttype += '[\033[93mXZ\033[0m]'
+        if compressionID == 5:
+            temp_parttype += '[\033[93mLZ4\033[0m]'
+        if compressionID == 6:
+            temp_parttype += '[\033[93mZSTD\033[0m]'
+
+        rootInode = struct.unpack('<II', fin.read(8))[0]
+        bytesUsed = struct.unpack('<II', fin.read(8))[0]
+
+        temp_parttype += ' \033[93m{:,}\033[0m'.format(bytesUsed) + ' bytes'
+
+        CRC = 0
+        if addinfo:
+            part_type.append(temp_parttype)
+            part_crc.append(0)
+            part_crcCalc.append(CRC)
+            fin.close()
+        return temp_parttype, CRC
+
+
+    # check is this a MODELEXT header and MODELEXT info
+    # class MODELEXT_HEADER(Structure): _fields_ = [
+    #    ("size", c_uint),
+    #    ("type", c_uint), // MODELEXT_TYPE_INFO = 1
+    #    ("number", c_uint),
+    #    ("version", c_uint), ]
+    MODELEXT_SIZE = partfirst4bytes # size in bytes for (header + data like info and others)
+    MODELEXT_TYPE = struct.unpack('<I', fin.read(4))[0]
+    MODELEXT_NUMBER = struct.unpack('<I', fin.read(4))[0] # 01 00 00 00
+    MODELEXT_VERSION = struct.unpack('<I', fin.read(4))[0] # MODELEXT_INFO_VER = 0x16072219   EMB_PARTITION_INFO_VER = 0x16072117
+
+    # начиная с INFO идут партиции одна за другой по инкременту TYPE, после последней MODELEXT_TYPE_MODEL_CFG идут padding bytes выравнивая по 4 байта
+    # MODELEXT_TYPE_INFO case
+    if (MODELEXT_TYPE == 1) and (MODELEXT_VERSION == 0x16072219) and (str(struct.unpack('8s', fin.read(8))[0])[2:-1] == 'MODELEXT'):
+        # class MODELEXT_INFO(Structure): _fields_ = [
+        #   ("name", c_char*8),
+        #   ("chip_name", c_char*8),
+        #   ("version", c_char*8),
+        #   ("date", c_char*8),
+        #   ("ext_bin_length", c_uint),
+        #   ("check_sum", c_uint), ]
+        temp_parttype = '\033[93mMODELEXT\033[0m'
+
+        temp_parttype += ' INFO: Chip:\033[93m' + str(struct.unpack('8s', fin.read(8))[0]).replace("\\x00","")[2:-1] + '\033[0m'
+        fin.read(8) # version 00000001
+        temp_parttype += ', Build:\033[93m' + str(struct.unpack('8s', fin.read(8))[0]).replace("\\x00","")[2:-1] + '\033[0m'
+        ext_bin_length = struct.unpack('<I', fin.read(4))[0] # ext_bin_length - full partition size (header + info + other types)
+        # 55 AA bytes
+        if (struct.unpack('>H', fin.read(2))[0] == 0x55AA):
+            uiChkValue = struct.unpack('<H', fin.read(2))[0] # read CRC value
+            CRC = MemCheck_CalcCheckSum16Bit(in_file, start_offset, ext_bin_length, 0x36) # calc CRC for partition data
+        else:
+            uiChkValue = 0 # if 0x55 0xAA bytes was not found
+            CRC = 0
+
+        if addinfo:
+            part_type.append(temp_parttype)
+            part_crc.append(uiChkValue)
+            part_crcCalc.append(CRC)
+            fin.close()
+
+        return temp_parttype, CRC
+    else:
+        # did not found MODELEXT, seek() back to partfirst4bytes after additional read() to valid read() and check in other cases
+        fin.seek(start_offset + 4, 0)
+
+
+    # uboot
+    # if partID == 3: # ранее всегда 3 партиция - это uboot
+    # теперь либо по имени партиции либо чтобы 7 INT были одинаковы в начале
+    # ещё есть на 0x3C смещении 0xDEADBEEF
+    samebytes = struct.unpack('>7I', fin.read(4*7)) # все = 0x14F09FE5 или 0x18F09FE5
+    fin.seek(0x1C, 1)
+    deadbytes = struct.unpack('<I', fin.read(4))[0] # 0xDEADBEEF но в старых прошивках нет
+    dec0bytes = struct.unpack('>I', fin.read(4))[0] # 0xDEC0AD0B вроде везде есть
+    if (len(dtbpart_name) > partID and str(dtbpart_name[partID]).lower() == 'uboot') or (samebytes[0] == samebytes[1] == samebytes[2] == samebytes[3] == samebytes[4] == samebytes[5] == samebytes[6] and dec0bytes == 0xDEC0AD0B):
+        temp_parttype = 'uboot'
+        # в uboot партиции пропускаем первые 0x300 байт - пока что так
+        fin.seek(start_offset + 0x300, 0)
+        
+        # попадаем на начало структуры HEADINFO или по другому NVTPACK_BININFO_HDR:
+        # typedef struct _NVTPACK_BININFO_HDR {
+        #    unsigned int CodeEntry;     ///< [0x00] fw CODE entry (4) ----- r by Ld
+        #    unsigned int Resv1[19];     ///< [0x04~0x50] reserved (4*19) -- reserved, its mem value will filled by Ld
+        #    char BinInfo_1[8];          ///< [0x50~0x58] CHIP-NAME (8) ---- r by Ep
+        #    char BinInfo_2[8];          ///< [0x58~0x60] version (8)
+        #    char BinInfo_3[8];          ///< [0x60~0x68] release date (8)
+        #    unsigned int BinLength;     ///< [0x68] Bin File Length (4) --- w by Ep/bfc
+        #    unsigned int Checksum;      ///< [0x6c] Check Sum or CRC (4) ----- w by Ep/Epcrc
+        #    unsigned int CRCLenCheck;   ///< [0x70~0x74] Length check for CRC (4) ----- w by Epcrc (total len ^ 0xAA55)
+        #    unsigned int Resv2;         ///< [0x74~0x78] reserved (4) --- reserved for other bin tools
+        #    unsigned int BinCtrl;       ///< [0x78~0x7C] Bin flag (4) --- w by bfc
+        #    ///< BIT 0.compressed enable (w by bfc)
+        #    unsigned int CRCBinaryTag;  ///< [0x7C~0x80] Binary Tag for CRC (4) ----- w by Epcrc
+        #}
+        # потом нули и начиная с 0x1000 идут данные партиции
+        
+        code_entry = struct.unpack('<I', fin.read(4))[0] # code_entry_address
+        fin.seek(0x50 - 4, 1) # reserved
+        chip_name = str(struct.unpack('8s', fin.read(8))[0])[2:-1] #отрезает b` `
+        fin.seek(8, 1) # version = FFFFFFFF
+        release_date = str(struct.unpack('8s', fin.read(8))[0])[2:-1] #отрезает b` `
+        file_length = struct.unpack('<I', fin.read(4))[0] # in bytes, should be same as in FW_HDR2
+        if (struct.unpack('<H', fin.read(2))[0] == 0xAA55):
+            read_CRC = struct.unpack('<H', fin.read(2))[0] # считали CRC из смещения 0x36E
+            CRC = MemCheck_CalcCheckSum16Bit(in_file, start_offset, part_size, 0x36E) # расчитаем CRC для данных партиции
+        else:
+            read_CRC = 0 # если признака наличия CRC (0xAA55) не нашли
+            CRC = 0
+        
+        temp_parttype += ' \"\033[93m' + chip_name + ' ' + release_date + '\033[0m\"'
+        
+        if addinfo:
+            part_type.append(temp_parttype)
+            part_crc.append(read_CRC)
+            part_crcCalc.append(CRC)
+            fin.close()
+        return temp_parttype, CRC
+    else:
+        fin.seek(start_offset + 4, 0) # seek back to file position right after partfirst4bytes was read
+
+
+    # unknown part
+    if addinfo:
+        part_type.append('\033[91munknown partition\033[0m')
+        part_crc.append(0)
+        part_crcCalc.append(0)
+        fin.close()
+    return '', 0
+
+
+
+def partition_extract(is_extract, is_extract_offset):
+    global partitions_count
+    global workdir
+
+    part_nr = -1
+    for a in range(partitions_count):
+        if part_id[a] == is_extract:
+            part_nr = a
+            break
+    if part_nr != -1:
+        if workdir != '':
+            out_file = workdir + '/' + in_file + '-partitionID' + str(part_id[part_nr])
+        else:
+            out_file = in_file + '-partitionID' + str(part_id[part_nr])
+
+        if is_extract_offset != -1:
+            if is_silent != 1:
+                print('Extract partition ID %i from 0x%08X + 0x%08X to file \033[93m%s\033[0m' % (part_id[part_nr], part_startoffset[part_nr], is_extract_offset, out_file))
+        else:
+            if is_silent != 1:
+                print('Extract partition ID %i from 0x%08X to file \033[93m%s\033[0m' % (part_id[part_nr], part_startoffset[part_nr], out_file))
+            is_extract_offset = 0
+
+        fin = open(in_file, 'r+b')
+        fin.seek(part_startoffset[part_nr] + is_extract_offset, 0)
+        finread = fin.read(part_size[part_nr] - is_extract_offset) # извлекаем только данные партиции без padding и 0000... в конце
+        '''# для корректного -add (возвращения партиций) после их удаления через -delete и получения файла 1 в 1 как был извлекаем теперь все данные от начала партиции до начала следующей партиции или конца файла для последней партиции
+        # но тут косяк в другом - размер возвращаемой партиции указан больше чем был т.к. нельзя понять(разве что парсить данные но мы может и без заголовка данные наверное брать) где партиция кончилась и начались паддинг и просто 0000... в конце
+        if a == partitions_count - 1: # посл. партиция
+            finread = fin.read(os.path.getsize(in_file) - part_startoffset[part_nr] - is_extract_offset)
+        else:
+            finread = fin.read(part_startoffset[part_nr + 1] - part_startoffset[part_nr] - is_extract_offset)'''
+        fin.close()
+
+        fpartout = open(out_file, 'w+b')
+        fpartout.write(finread)
+        fpartout.close()
+    else:
+        print('\033[91mCould not find partiton with ID %i\033[0m' % is_extract)
+
+
+
+def partition_replace(is_replace, is_replace_offset, is_replace_file):
+    global partitions_count
+    global NVTPACK_FW_HDR2_size
+    global total_file_size
+    global is_add
+    global is_del
+    
+
+    part_nr = -1
+    for a in range(partitions_count):
+        if part_id[a] == is_replace:
+            part_nr = a
+            break
+    
+    if part_nr != -1:
+        # проверим что файл существует
+        if not os.path.isfile(is_replace_file):
+            print('\033[91m%s file does not found, exit\033[0m' % is_replace_file)
+            exit(0)
+    
+        if is_silent != 1:
+            if is_add != -1:
+                print('Add ', end='') # если добавляем новую партицию
+            else:
+                print('Replace ', end='') # если заменяем партицию
+            print('partition ID %i at 0x%08X ' % (is_replace, part_startoffset[part_nr]), end='')
+            if is_replace_offset != 0: print('+ 0x%08X ' % is_replace_offset, end='')
+            print('using inputfile \033[93m%s\033[0m' % is_replace_file)
+        
+        # read new partition data from file
+        freplace = open(is_replace_file, 'rb')
+        replacedata = freplace.read()
+        freplace.close()
+        
+        if (len(replacedata) + is_replace_offset) == part_size[part_nr]:
+            fin = open(in_file, 'r+b')
+            fin.seek(part_startoffset[part_nr] + is_replace_offset, 0)
+            fin.write(replacedata)
+            fin.close()
+        else:
+            # размер партиции изменился - надо всё передвигать и обновлять заголовки
+            # для современной версии прошивок
+            if FW_HDR2 == 1:
+                fin = open(in_file, 'rb')
+                # если заменяемая партиция не последняя то
+                if part_nr + 1 < partitions_count:
+                    fin.seek(part_startoffset[part_nr + 1], 0)
+                    #print('enddata start at 0x%08X' % part_startoffset[part_nr + 1])
+                    enddata = fin.read() # считали все партиции после заменяемой партиции
+                fin.close()
+
+                # заменим данные в таблице партиций: [part_startoffset, part_size, part_id]
+                fin = open(in_file, 'r+b') # именно r+b для ЗАМЕНЫ данных
+                fin.seek(NVTPACK_FW_HDR2_size + (part_nr * 12), 0)
+                fin.seek(4, 1) # part_startoffset не поменяется
+                # высчитаем сколько нужно 00 для выравнивания новой партиции до кратности 4 байт
+                newalignsize = (4 - ((len(replacedata) + is_replace_offset)%4))
+                if newalignsize == 4:
+                    newalignsize = 0
+                newsize = len(replacedata) + is_replace_offset + newalignsize
+                # бывают прошивки где между part_startoffset+part_size и началом следующей партиции есть место (больше чем требуется для выравнивания по 4 байта), неиспользуемое но оно есть
+                # поэтому вычитаем не part_size[part_nr] + oldalignsize
+                # а (part_startoffset[part_nr + 1] - part_startoffset[part_nr]) - полный размер партиции = полезный размер + выравнивание до 4 байт + неиспользуемые данные 00 до след. партиции
+                if part_nr + 1 < partitions_count:
+                    sizediff = newsize - (part_startoffset[part_nr + 1] - part_startoffset[part_nr]) # разница в размерах - может быть отрицательной
+                else:
+                    sizediff = newsize - part_size[part_nr] # для последней партиции если только брать её размер
+
+                #print('new alignsize %d' % newalignsize)
+                #print('newsize %d' % newsize)
+                #print('sizediff %d' % sizediff)
+                #print('write newsize to 0x%08X' % (NVTPACK_FW_HDR2_size + (part_nr * 12) + 4))
+                fin.write(struct.pack('<I', newsize - newalignsize)) # заменим part_size новым без учёта выравнивания до 4 байт
+                part_size[part_nr] = newsize - newalignsize # корректируем данные в нашей переменной
+                fin.seek(4, 1) #пропустим part_id
+
+                # пересчитаем part_startoffset для партиций идущих следом за заменяемой
+                a = part_nr + 1
+                while(a < partitions_count):
+                    fin.write(struct.pack('<I', part_startoffset[a] + sizediff))
+                    part_startoffset[a] = part_startoffset[a] + sizediff # корректируем данные в нашей переменной
+                    fin.seek(8, 1)
+                    a += 1
+
+                # заменим партицию
+                #print('replace part at 0x%08X' % (part_startoffset[part_nr] + is_replace_offset))
+                fin.seek(part_startoffset[part_nr] + is_replace_offset, 0)
+                fin.write(replacedata)
+
+                # добавим сколько надо 00 для выравнивания до 4 байт адреса начала следующей партиции
+                for b in range(newalignsize):
+                    fin.write(struct.pack('B', 0))
+
+                # если заменяемая партиция не последняя то
+                if part_nr + 1 < partitions_count:
+                    # допишем оставшиеся партиции
+                    fin.write(enddata)
+                fin.truncate() # изменим размер файла
+                fin.close()
+
+                filesize = os.path.getsize(in_file)
+                # пересчитаем TotalSize в NVTPACK_FW_HDR2
+                fin = open(in_file, 'r+b') # именно r+b для ЗАМЕНЫ данных
+                fin.seek(28, 0)
+                fin.write(struct.pack('<I', filesize))
+                total_file_size = filesize # корректируем данные в нашей переменной
+
+                # если заменяем данные внутри CKSM-партиции то в её заголовке нужно исправить DataSize
+                # если меняется с самого начала то в файле уже должен быть правильный заголовок (CKSM можно заменить и на иной тип партиции)
+                if (part_type[part_nr][:13] == '\033[93mCKSM\033[0m' and is_replace_offset > 0):
+                    fin.seek(part_startoffset[part_nr] + 0x14, 0)
+                    fin.write(struct.pack('<I', newsize - 64)) # newsize - это с учетом CKSM заголовка(64 байта)
+
+                fin.close()
+                return
+
+            # для более старой версии прошивок (BCL1 + NVTPACK_FW_HDR) или для просто BCL1
+            if (FW_HDR == 1) | ((FW_HDR == 0) & (partitions_count == 1)):
+                fin = open(in_file, 'rb')
+                # если заменяемая партиция не последняя то
+                if part_nr + 1 < partitions_count:
+                    fin.seek(part_startoffset[part_nr + 1], 0)
+                    #print('enddata start at 0x%08X' % part_startoffset[part_nr + 1])
+                    enddata = fin.read() # считали все партиции после заменяемой партиции
+                fin.close()
+
+                # если это не просто BCL1 партиция идущая вне таблицы партиций
+                if part_id[part_nr] != 0:
+                    # заменим данные в таблице партиций: [part_startoffset, part_size, part_id]
+                    fin = open(in_file, 'r+b') # именно r+b для ЗАМЕНЫ данных
+                    fin.seek(part_size[0] + 28 + ((part_nr - 1) * 12), 0)
+                    fin.seek(4, 1) # part_startoffset не поменяется
+                    # высчитаем сколько нужно 00 для выравнивания новой партиции до кратности 4 байт
+                    newalignsize = (4 - ((len(replacedata) + is_replace_offset)%4))
+                    if newalignsize == 4:
+                        newalignsize = 0
+                    newsize = len(replacedata) + is_replace_offset + newalignsize
+                    # бывают прошивки где между part_startoffset+part_size и началом следующей партиции есть место (больше чем требуется для выравнивания по 4 байта), неиспользуемое но оно есть
+                    # поэтому вычитаем не part_size[part_nr] + oldalignsize
+                    # а (part_startoffset[part_nr + 1] - part_startoffset[part_nr]) - полный размер партиции = полезный размер + выравнивание до 4 байт + неиспользуемые данные 00 до след. партиции
+                    if part_nr + 1 < partitions_count:
+                        sizediff = newsize - (part_startoffset[part_nr + 1] - part_startoffset[part_nr]) # разница в размерах - может быть отрицательной
+                    else:
+                        sizediff = newsize - part_size[part_nr] # для последней партиции если только брать её размер
+
+                    #print('new alignsize %d' % newalignsize)
+                    #print('newsize %d' % newsize)
+                    #print('sizediff %d' % sizediff)
+                    #print('write newsize to 0x%08X' % (part_size[0] + 28 + ((part_nr-1) * 12) + 4))
+                    fin.write(struct.pack('<I', newsize - newalignsize)) # заменим part_size новым без учёта выравнивания до 4 байт
+                    part_size[part_nr] = newsize - newalignsize # корректируем данные в нашей переменной
+                    fin.seek(4, 1) #пропустим part_id
+
+                    # пересчитаем part_startoffset для партиций идущих следом за заменяемой
+                    a = part_nr + 1
+                    while(a < partitions_count):
+                        fin.write(struct.pack('<I', part_startoffset[a] + sizediff))
+                        part_startoffset[a] = part_startoffset[a] + sizediff # корректируем данные в нашей переменной
+                        fin.seek(8, 1) # size и ID не поменяются
+                        a += 1
+
+                    # заменим партицию
+                    #print('replace part at 0x%08X' % (part_startoffset[part_nr] + is_replace_offset))
+                    fin.seek(part_startoffset[part_nr] + is_replace_offset, 0)
+                    fin.write(replacedata)
+
+                    # добавим сколько надо 00 для выравнивания до 4 байт адреса начала следующей партиции
+                    for b in range(newalignsize):
+                        fin.write(struct.pack('B', 0))
+
+                    # если заменяемая партиция не последняя то
+                    if part_nr + 1 < partitions_count:
+                        # допишем оставшиеся партиции
+                        fin.write(enddata)
+                    fin.truncate() # изменим размер файла
+                    fin.close()
+
+                    filesize = os.path.getsize(in_file)
+                    # TotalSize в NVTPACK_FW_HDR не меняется т.к. в нем только размеры заголовков
+                    # для загрузчика файл будет дополнен 00 до требуемого размера чуть позже
+                    if FW_BOOTLOADER == 0:
+                        total_file_size = filesize # корректируем данные в нашей переменной
+
+                    # если заменяем данные внутри CKSM-партиции то в её заголовке нужно исправить DataSize
+                    # если меняется с самого начала то в файле уже должен быть правильный заголовок (CKSM можно заменить и на иной тип партиции)
+                    if (part_type[part_nr][:13] == '\033[93mCKSM\033[0m' and is_replace_offset > 0):
+                        fin.seek(part_startoffset[part_nr] + 0x14, 0)
+                        fin.write(struct.pack('<I', newsize - 64)) # newsize - это с учетом CKSM заголовка(64 байта)
+
+                    fin.close()
+                    return
+                else:
+                    # если это просто BCL1 партиция идущая с начала файла
+                    fin = open(in_file, 'r+b') # именно r+b для ЗАМЕНЫ данных
+                    fin.seek(part_size[0] + 28, 0)
+                    # высчитаем сколько нужно 00 для выравнивания новой партиции до кратности 4 байт
+                    newalignsize = (4 - ((len(replacedata) + is_replace_offset)%4))
+                    if newalignsize == 4:
+                        newalignsize = 0
+                    newsize = len(replacedata) + is_replace_offset + newalignsize
+                    # бывают прошивки где между part_startoffset+part_size и началом следующей партиции есть место (больше чем требуется для выравнивания по 4 байта), неиспользуемое но оно есть
+                    # поэтому вычитаем не part_size[part_nr] + oldalignsize
+                    # а (part_startoffset[part_nr + 1] - part_startoffset[part_nr]) - полный размер партиции = полезный размер + выравнивание до 4 байт + неиспользуемые данные 00 до след. партиции
+                    if part_nr + 1 < partitions_count:
+                        sizediff = newsize - (part_startoffset[part_nr + 1] - part_startoffset[part_nr]) # разница в размерах - может быть отрицательной
+                    else:
+                        sizediff = newsize - part_size[part_nr] # для последней партиции если только брать её размер
+
+                    #print('new alignsize %d' % newalignsize)
+                    #print('newsize %d' % newsize)
+                    #print('sizediff %d' % sizediff)
+                    #print('write newsize to 0x%08X' % (part_size[0] + 28 + ((part_nr-1) * 12) + 4))
+
+                    # пересчитаем part_startoffset для всех партиций в таблице (нулевой там нет)
+                    a = 1
+                    while(a < partitions_count):
+                        fin.write(struct.pack('<I', part_startoffset[a] + sizediff + 28 + (partitions_count - 1)*12)) # коррекция на величину изменения размера 0 партиции + размер заголовка _NVTPACK_FW_HDR + n*_NVTPACK_PARTITION_HDR
+                        part_startoffset[a] = part_startoffset[a] + sizediff + 28 + (partitions_count - 1)*12 # корректируем данные в нашей переменной
+                        fin.seek(8, 1) # size и ID не поменяются
+                        a += 1
+
+                    # если заменяемая партиция не последняя то
+                    if part_nr + 1 < partitions_count:
+                        # считали всё после нулевой партиции - вместе с _NVTPACK_FW_HDR и таблицей партиций
+                        fin.seek(part_size[0], 0)
+                        enddata = fin.read()
+
+                    # заменим партицию
+                    #print('replace partition at 0x%08X' % (part_startoffset[part_nr] + is_replace_offset))
+                    fin.seek(part_startoffset[part_nr] + is_replace_offset, 0)
+                    fin.write(replacedata)
+
+                    part_size[part_nr] = newsize - newalignsize # корректируем данные в нашей переменной
+
+                    # добавим сколько надо 00 для выравнивания до 4 байт адреса начала следующей партиции
+                    for b in range(newalignsize):
+                        fin.write(struct.pack('B', 0))
+
+                    # если заменяемая партиция не последняя то
+                    if part_nr + 1 < partitions_count:
+                        # допишем оставшиеся партиции
+                        fin.write(enddata)
+                    fin.truncate() # изменим размер файла
+                    fin.close()
+
+                    filesize = os.path.getsize(in_file)
+                    # TotalSize в NVTPACK_FW_HDR не меняется т.к. в нем только размеры заголовков
+                    total_file_size = filesize # корректируем данные в нашей переменной
+
+                    # если заменяем данные внутри CKSM-партиции то в её заголовке нужно исправить DataSize
+                    # если меняется с самого начала то в файле уже должен быть правильный заголовок (CKSM можно заменить и на иной тип партиции)
+                    if (part_type[part_nr][:13] == '\033[93mCKSM\033[0m' and is_replace_offset > 0):
+                        fin.seek(part_startoffset[part_nr] + 0x14, 0)
+                        fin.write(struct.pack('<I', newsize - 64)) # newsize - это с учетом CKSM заголовка(64 байта)
+
+                    fin.close()
+                    return
+            else:
+                print('\033[91mError: Could not replace this partition.\033[0m')
+                exit(0)
+    else:
+        print('\033[91mCould not find partiton with ID %i\033[0m' % is_replace)
+
+
+
+def fixCRC(partID):
+    global partitions_count
+    global total_file_size, orig_file_size
+    global FW_BOOTLOADER
+    
+    for a in range(partitions_count):
+        if part_id[a] == partID:
+            # recalculate CRC of replaced partititon
+            text, calcCRC = GetPartitionInfo(part_startoffset[a], part_size[a], part_id[a], 0)
+            
+            if part_crc[a] != calcCRC:
+                # fix CRC for uboot
+                if part_type[a] == 'uboot':
+                    fin = open(in_file, 'r+b')
+                    fin.seek(part_startoffset[a] + 0x36E, 0)
+                    fin.write(struct.pack('<H', calcCRC))
+                    fin.close()
+                    if is_silent != 1:
+                        print('Partition ID ' + str(part_id[a]) + ' - \033[94mCRC fixed\033[0m')
+                    break
+                # fix CRC for MODELEXT
+                if part_type[a][:17] == '\033[93mMODELEXT\033[0m':
+                    fin = open(in_file, 'r+b')
+                    fin.seek(part_startoffset[a] + 0x36, 0)
+                    fin.write(struct.pack('<H', calcCRC))
+                    fin.close()
+                    if is_silent != 1:
+                        print('Partition ID ' + str(part_id[a]) + ' - \033[94mCRC fixed\033[0m')
+                    break
+                # fix CRC for CKSM
+                if part_type[a][:13] == '\033[93mCKSM\033[0m':
+                    fin = open(in_file, 'r+b')
+                    fin.seek(part_startoffset[a] + 0xC, 0)
+                    fin.write(struct.pack('<I', calcCRC))
+                    fin.close()
+                    if is_silent != 1:
+                        print('Partition ID ' + str(part_id[a]) + ' - \033[94mCRC fixed\033[0m')
+                    break
+                # fix CRC for BCL1
+                if part_type[a][:13] == '\033[93mBCL1\033[0m':
+                    # do not fix CRC for bootloader yet
+                    if FW_BOOTLOADER == 0:
+                        fin = open(in_file, 'r+b')
+                        fin.seek(part_startoffset[a] + 0x4, 0)
+                        fin.write(struct.pack('<H', calcCRC))
+                        fin.close()
+                        if is_silent != 1:
+                            print('Partition ID ' + str(part_id[a]) + ' - \033[94mCRC fixed\033[0m')
+                        break
+            else:
+                if is_silent != 1:
+                    print('Partition ID ' + str(part_id[a]) + ' - fix CRC not required')
+
+    # fix CRC for whole file
+    if FW_HDR2 == 1:
+        # Выведем новый размер файла прошивки т.к. он изменился
+        if(total_file_size != orig_file_size):
+            print('Firmware file size \033[94m{:,}\033[0m bytes'.format(total_file_size))
+        else:
+            print('Firmware file size \033[92m{:,}\033[0m bytes'.format(total_file_size))
+    
+        CRC_FW = MemCheck_CalcCheckSum16Bit(in_file, 0, total_file_size, 0x24)
+        if checksum_value == CRC_FW:
+            if is_silent != 1:
+                print('Firmware file ORIG_CRC:\033[93m0x%04X\033[0m CALC_CRC:\033[92m0x%04X\033[0m' % (checksum_value, CRC_FW))
+        else:
+            fin = open(in_file, 'r+b')
+            fin.seek(0x24, 0) # for NVTPACK_FW_HDR2
+            fin.write(struct.pack('<I', CRC_FW))
+            fin.close()
+            if is_silent != 1:
+                print('Firmware file ORIG_CRC:\033[93m0x%04X\033[0m CALC_CRC:\033[91m0x%04X\033[0m, \033[94mCRC fixed\033[0m' % (checksum_value, CRC_FW))
+
+    else:
+        if FW_HDR == 1:
+            # Выведем новый размер файла прошивки т.к. он изменился
+            if(total_file_size != orig_file_size):
+                print('Firmware file size \033[94m{:,}\033[0m bytes'.format(total_file_size))
+            else:
+                print('Firmware file size \033[92m{:,}\033[0m bytes'.format(total_file_size))
+
+            CRC_FW = MemCheck_CalcCheckSum16Bit(in_file, part_size[0], NVTPACK_FW_HDR_AND_PARTITIONS_size, 0x14)
+            if checksum_value == CRC_FW:
+                if is_silent != 1:
+                    print('NVTPACK_FW_HDR + Partitions table ORIG_CRC:\033[93m0x%04X\033[0m CALC_CRC:\033[92m0x%04X\033[0m' % (checksum_value, CRC_FW))
+            else:
+                fin = open(in_file, 'r+b')
+                fin.seek(part_size[0] + 0x14, 0) # for NVTPACK_FW_HDR
+                fin.write(struct.pack('<I', CRC_FW))
+                fin.close()
+                if is_silent != 1:
+                    print('NVTPACK_FW_HDR + Partitions table ORIG_CRC:\033[93m0x%04X\033[0m CALC_CRC:\033[91m0x%04X\033[0m, \033[94mCRC fixed\033[0m' % (checksum_value, CRC_FW))
+        else:
+            if FW_BOOTLOADER == 1:
+                # Выведем новый размер файла прошивки т.к. он изменился
+                total_file_size = os.path.getsize(in_file)
+                if(total_file_size != orig_file_size):
+                    print('Bootloader file size \033[94m{:,}\033[0m bytes'.format(total_file_size))
+                else:
+                    print('Bootloader file size \033[92m{:,}\033[0m bytes'.format(total_file_size))
+    
+                CRC_FW = MemCheck_CalcCheckSum16Bit(in_file, 0, total_file_size, 0x32)
+                if checksum_value == CRC_FW:
+                    if is_silent != 1:
+                        print('Bootloader file ORIG_CRC:\033[93m0x%04X\033[0m CALC_CRC:\033[92m0x%04X\033[0m' % (checksum_value, CRC_FW))
+                else:
+                    fin = open(in_file, 'r+b')
+                    fin.seek(0x32, 0) # for bootloader only
+                    fin.write(struct.pack('<H', CRC_FW))
+                    fin.close()
+                    if is_silent != 1:
+                        print('Bootloader file ORIG_CRC:\033[93m0x%04X\033[0m CALC_CRC:\033[91m0x%04X\033[0m, \033[94mCRC fixed\033[0m' % (checksum_value, CRC_FW))
+
+
+
+def main():
+    global in_file
+    global is_silent
+    #global in_offset
+    global out_file
+    in_file, is_extract, is_extract_offset, is_extract_all, is_add, is_add_file, is_del, is_replace, is_replace_offset, is_replace_file, is_uncompress, is_uncompress_offset, is_compress, fixCRC_partID, is_silent = get_args()
+    global partitions_count
+    global FW_HDR
+    global FW_HDR2
+    global FW_BOOTLOADER
+    global NVTPACK_FW_HDR2_size
+    global total_file_size, orig_file_size
+    global checksum_value
+    global NVTPACK_FW_HDR_AND_PARTITIONS_size
+    global workdir
+
+
+    # for color output support in Windows
+    if platform.system() == 'Windows':
+        os.system('color')
+
+    # show header about this program and author copyrights
+    if is_silent != 1:
+        ShowInfoBanner()
+
+    if not os.path.exists(in_file):
+        print('\033[91m%s input file does not found, exit\033[0m' % in_file)
+        exit(0)
+
+    partitions_count = 0
+    fin = open(in_file, 'rb')
+
+    FW_HDR = 0
+    FW_HDR2 = 0
+    FW_BOOTLOADER = 0
+
+    # NVTPACK_FW_HDR2 GUID check
+    #проверим не в конце ли мы файла уже
+    if (fin.tell() + 16) < os.stat(in_file).st_size:
+        if struct.unpack('<I', fin.read(4))[0] == 0xD6012E07:
+            if struct.unpack('<H', fin.read(2))[0] == 0x10BC:
+                if struct.unpack('<H', fin.read(2))[0] == 0x4F91:
+                    if struct.unpack('>H', fin.read(2))[0] == 0xB28A:
+                        if struct.unpack('>I', fin.read(4))[0] == 0x352F8226:
+                            if struct.unpack('>H', fin.read(2))[0] == 0x1A50:
+                                FW_HDR2 = 1
+
+    if FW_HDR2 != 1:
+        print("\033[91mNVTPACK_FW_HDR2\033[0m not found")
+        fin.seek(0, 0)
+        if struct.unpack('>I', fin.read(4))[0] == 0x42434C31: # == BCL1
+            part_startoffset.append(0)
+            fin.seek(0xC, 0)
+            zeroBCL1_part_size = struct.unpack('>I', fin.read(4))[0] + 0x10 # + 0x10 потому что мы будем показывать размер партиции с заголовком BCL1, а не размер данных внутри BCL1
+            part_size.append(zeroBCL1_part_size)
+            part_id.append(0)
+            part_endoffset.append(part_size[0])
+
+            fin.seek(part_size[0], 0)
+            #тут должен быть NVTPACK_FW_HDR
+            FW_HDR = 0
+            #проверим не в конце ли мы файла уже
+            if (fin.tell() + 16) < os.stat(in_file).st_size:
+                # если не в конце то проверяем дальше
+                # NVTPACK_FW_HDR GUID check
+                if struct.unpack('<I', fin.read(4))[0] == 0x8827BE90:
+                    if struct.unpack('<H', fin.read(2))[0] == 0x36CD:
+                        if struct.unpack('<H', fin.read(2))[0] == 0x4FC2:
+                            if struct.unpack('>H', fin.read(2))[0] == 0xA987:
+                                if struct.unpack('>I', fin.read(4))[0] == 0x73A8484E:
+                                    if struct.unpack('>H', fin.read(2))[0] == 0x84B1:
+                                        FW_HDR = 1
+            if FW_HDR == 0:
+                print("\033[91mNVTPACK_FW_HDR\033[0m not found")
+                partitions_count = 1 # раз нет NVTPACK_FW_HDR значит у нас только 1 партиция - 
+                if is_silent != 1:
+                    print("\033[93mBCL1\033[0m found") # есть только BCL1 партиция
+            else:
+                if is_silent != 1:
+                    print("\033[93mNVTPACK_FW_HDR\033[0m found")
+                NVTPACK_FW_HDR_AND_PARTITIONS_size = struct.unpack('<I', fin.read(4))[0]
+                checksum_value = struct.unpack('<I', fin.read(4))[0]
+                partitions_count = struct.unpack('<I', fin.read(4))[0] + 1  # + 1 так как есть еще нулевая BCL1 партиция
+                print('Found \033[93m%i\033[0m partitions' % (partitions_count))
+
+                total_file_size = os.path.getsize(in_file)
+                orig_file_size = total_file_size
+                print('Firmware file size \033[93m{:,}\033[0m bytes'.format(total_file_size))
+
+                # если есть команда извлечь или заменить или распаковать или запаковать партицию то CRC не считаем чтобы не тормозить
+                if (is_extract == -1 & is_replace == -1 & is_uncompress == -1 & is_compress == -1 & is_add == -1 & is_del == -1):
+                    CRC_FW = MemCheck_CalcCheckSum16Bit(in_file, part_size[0], NVTPACK_FW_HDR_AND_PARTITIONS_size, 0x14)
+                    if checksum_value == CRC_FW:
+                        print('NVTPACK_FW_HDR + Partitions table ORIG_CRC:\033[93m0x%04X\033[0m CALC_CRC:\033[92m0x%04X\033[0m' % (checksum_value, CRC_FW))
+                    else:
+                        print('NVTPACK_FW_HDR + Partitions table ORIG_CRC:\033[93m0x%04X\033[0m CALC_CRC:\033[91m0x%04X\033[0m' % (checksum_value, CRC_FW))
+
+                # read partitions table info
+                fin.seek(part_size[0] + 0x1C, 0) # 0x1C - это NVTPACK_FW_HDR + 3*4 байта (NVTPACK_FW_HDR_AND_PARTITIONS_size, checksum_value, partitions_count)
+
+
+                # если хотим добавить партицию проверим сначала что файл с новой партицией существует
+                if is_add != -1:
+                    # если имя файла для данных новой партиции не переопределено в параметрах запуска то используем стандартное имя для извлекаемых партиций через "-x"
+                    if is_add_file == '':
+                        if workdir != '':
+                            is_add_file = workdir + '/' + in_file + '-partitionID' + str(is_add)
+                        else:
+                            is_add_file = in_file + '-partitionID' + str(is_add)
+                    
+                    if not os.path.isfile(is_add_file):
+                        print('\033[91m%s file does not found, exit\033[0m' % is_add_file)
+                        exit(0)
+
+
+                is_new_part_added = 0
+                is_part_deleted = 0
+                delete_start = 0
+                delete_end = 0
+                padding = 0
+                # считываем таблицу партиций (не только при добавлении партиции а всегда)
+                for a in range(1, partitions_count): # с 1 так как нулевую партицию BCL1 мы уже занесли в массивы да и она не тносится к таблице партиций
+                    part_startoffset_read = struct.unpack('<I', fin.read(4))[0]
+                    part_size_read = struct.unpack('<I', fin.read(4))[0]
+                    part_id_read = struct.unpack('<I', fin.read(4))[0]
+
+                    # если еще не добавляли но хотим добавить партицию
+                    if (is_add != -1 and is_new_part_added == 0): # тут is_add = id добавляемой партиции
+                        if(a > 0):
+                            last_read_id = part_id[a-1]
+                        else:
+                            last_read_id = -1 # не было еще ничего раньше
+                        if(last_read_id < is_add and part_id_read > is_add): # нашли между какими id добавлять новый несуществующий
+                            # добавим новую партицию нулевого размера, поэтому оффсет такой же как у след. партиции
+                            part_startoffset.append(part_startoffset_read)
+                            part_size.append(0) # добавим новую партицию пока что нулевого размера
+                            part_id.append(is_add)
+                            part_endoffset.append(part_startoffset_read) # т.к. размер = 0 (пока что)
+                            is_new_part_added = 1
+
+                    # добавляем все существующие в файле партиции но если только не хотим удалить текущую обрабатываемую партицию
+                    if is_del == -1 or is_del != part_id_read:
+                        part_startoffset.append(part_startoffset_read - (delete_end - delete_start))
+                        part_size.append(part_size_read)
+                        part_id.append(part_id_read)
+                        part_endoffset.append(part_startoffset_read + part_size_read - (delete_end - delete_start))
+                    else:
+                        is_part_deleted = 1 # флаг что партиция удалена из таблицы партиций, еще нужно удалить сами данные
+                        delete_start = part_startoffset_read
+                        print('Delete partition ID %i at 0x%08X' % (is_del, delete_start))
+                        if a == partitions_count - 1: # если удаляем последнюю партицию
+                            delete_end = total_file_size # то от начала партиции и до конца файла
+                        else:
+                            delete_end = struct.unpack('<I', fin.read(4))[0] # = началу следующей за удаляемой партиции чтобы удалить и data и паддинг и 00000...
+                            fin.seek(-4, 1)
+
+                # если хотим добавить партицию с ID больше чем у последней партиции (т.е. добавить новую в конец)
+                if is_add != -1 and is_new_part_added == 0 and is_add > part_id[partitions_count-1]:
+                    # при добавлении между существующими партициями новая встанет на смещение последующей, а та уже выровнена по 4 байтам и таблица расширяется на 12 байт что кратно 4 т.е. следующие смещения не пострадают
+                    # а вот при добавлении в конец прошики это нужно сделать самим
+                    # изначально использовалось part_endoffset[partitions_count-1] но попадаются партиции с 00 в конце уже после data - перешел на размер файла total_file_size (он еще не увеличен тут) чтобы эти 00 сохранить
+                    padding = 4 - (total_file_size % 4)
+                    if padding == 4: padding = 0 # при использ. total_file_size padding д.б. всегда = 0
+
+                    part_startoffset.append(total_file_size + padding)
+                    part_size.append(0) # добавим новую партицию пока что нулевого размера
+                    part_id.append(is_add)
+                    part_endoffset.append(total_file_size + padding) # т.к. размер = 0 (пока что)
+                    is_new_part_added = 1
+
+
+            # перезапишем файл с новой таблицей партиций изменив смещения партиций на -12 байт(размер удалённой записи)
+            if is_del != -1:
+                if is_part_deleted == 0:
+                    if is_del == 0: # для FW_HDR = 1 мы не можем удалять 0 партицию т.к. вся структура таких прошивок это BCL1 + NVTPACK_FW_HDR partititon table
+                        print('\033[91mDenied to delete 0 partition in NVTPACK_FW_HDR firmwares\033[0m')
+                    else:
+                        print('\033[91mPartititon with ID=%i is not found\033[0m' % (is_del))
+                    fin.close()
+                    exit(0)
+                else:
+                    fin.close()
+                    fin = open(in_file, 'r+b') # именно r+b для ЗАМЕНЫ данных
+                    fin.seek(part_size[0] + NVTPACK_FW_HDR_AND_PARTITIONS_size, 0)
+                    read_end1 = fin.read(delete_start - (part_size[0] + NVTPACK_FW_HDR_AND_PARTITIONS_size)) # считали всё до удаления
+                    fin.seek((delete_end - delete_start), 1) # пропустим размер то начала удаляемой партиции до начала следующей партиции
+                    read_end2 = fin.read() # считаем всё до конца, если удаляем посл. партицию то тут д.б. пусто
+
+                    partitions_count -= 1 # т.к. удалили партицию
+                    NVTPACK_FW_HDR_AND_PARTITIONS_size -= 12 # т.к. удалили партицию
+                    total_file_size -= 12 + (delete_end - delete_start) # а orig_file_size не меняем чтобы при фиксе CRC всего файла показать разницу размеров старого и нового файла
+                    # запишем новое кол-во партиций и новый размер файла
+                    fin.seek(part_size[0] + 0x10, 0) # 0x10 - это начало + NVTPACK_FW_HDR
+                    fin.write(struct.pack('<I', NVTPACK_FW_HDR_AND_PARTITIONS_size))
+                    fin.seek(4, 1) # пропускаем старое значение CRC
+                    fin.write(struct.pack('<I', partitions_count-1)) # -1 т.к. не надо учитывать нулевую партицию BCL1, она не в таблице партиций
+
+                    # на начало таблицы партиций (seek не нужен, мы уже по этому смещению)
+                    #fin.seek(part_size[0] + 0x1C, 0) # 0x1C - это NVTPACK_FW_HDR + 3*4 байта (NVTPACK_FW_HDR_AND_PARTITIONS_size, checksum_value, partitions_count)
+                    # пишем новые данные о партициях [part_startoffset, part_size, part_id]
+                    for a in range(1, partitions_count): # 1 - чтобы пропустить нулевую BCL1 партицию
+                        # таблица уменьшится на 12 байт что кратно 4 т.е. следующие смещения останутся выровненными по 4 байтам
+                        part_startoffset[a] = part_startoffset[a] - 12 # после удаления партиции всё будет сдвинуто на 12 байт записи о ней в таблице
+                        part_endoffset[a] = part_endoffset[a] - 12  # после удаления партиции всё будет сдвинуто на 12 байт записи о ней в таблице
+                        fin.write(struct.pack('<I', part_startoffset[a]))
+                        fin.write(struct.pack('<I', part_size[a]))
+                        fin.write(struct.pack('<I', part_id[a]))
+                    fin.write(read_end1) # дописываем данные
+                    fin.write(read_end2) # дописываем данные
+                    fin.truncate() # удаляем лишние данные в оригинальном большом файле
+                    fin.close()
+
+            
+            # перезапишем файл с новой таблицей партиций изменив смещения партиций на 12 байт(размер записи о новой партиции)
+            if is_add != -1:
+                if is_new_part_added == 0:
+                    if is_add in part_id:
+                        print('\033[91mPartititon with ID=%i already exist. Use \033[93m-r\033[91m for replace\033[0m' % (is_add))
+                    else:
+                        print('\033[91mCould not add partititon with ID=%i\033[0m' % (is_add))
+                    fin.close()
+                    exit(0)
+                else:
+                    fin.close()
+                    fin = open(in_file, 'r+b') # именно r+b для ЗАМЕНЫ данных
+                    fin.seek(part_size[0] + NVTPACK_FW_HDR_AND_PARTITIONS_size, 0)
+                    read_end = fin.read() # считали всё что после старой таблицы партиций
+
+                    partitions_count += 1 # т.к. добавили партицию
+                    NVTPACK_FW_HDR_AND_PARTITIONS_size += 12 # т.к. добавили партицию
+                    total_file_size += 12 # а orig_file_size не меняем чтобы при фиксе CRC всего файла показать разницу размеров старого и нового файла
+                    # запишем новое кол-во партиций и новый размер файла
+                    fin.seek(part_size[0] + 0x10, 0) # 0x10 - это начало + NVTPACK_FW_HDR
+                    fin.write(struct.pack('<I', NVTPACK_FW_HDR_AND_PARTITIONS_size))
+                    fin.seek(4, 1) # пропускаем старое значение CRC
+                    fin.write(struct.pack('<I', partitions_count-1)) # -1 т.к. не надо учитывать нулевую партицию BCL1, она не в таблице партиций
+
+                    # на начало таблицы партиций (seek не нужен, мы уже по этому смещению)
+                    #fin.seek(part_size[0] + 0x1C, 0) # 0x1C - это NVTPACK_FW_HDR + 3*4 байта (NVTPACK_FW_HDR_AND_PARTITIONS_size, checksum_value, partitions_count)
+                    # пишем новые данные о партициях [part_startoffset, part_size, part_id]
+                    for a in range(1, partitions_count): # 1 - чтобы пропустить нулевую BCL1 партицию
+                        # таблица расширится на 12 байт что кратно 4 т.е. следующие смещения останутся выровненными по 4 байтам
+                        part_startoffset[a] = part_startoffset[a] + 12 # после добавления новой партиции всё будет сдвинуто на 12 байт записи о ней в таблице
+                        part_endoffset[a] = part_endoffset[a] + 12  # после добавления новой партиции всё будет сдвинуто на 12 байт записи о ней в таблице
+                        fin.write(struct.pack('<I', part_startoffset[a]))
+                        fin.write(struct.pack('<I', part_size[a]))
+                        fin.write(struct.pack('<I', part_id[a]))
+                    fin.write(read_end) # дописываем данные
+                    # дописываем нулевые байты padding перед новой последней партицией для выравнивения ее адреса смещения по 4 байтам
+                    fin.write(b'\x00' * padding)
+                    fin.close()
+
+            # read each partition info
+            for a in range(partitions_count):
+                GetPartitionInfo(part_startoffset[a], part_size[a], part_id[a], 1)
+
+
+            # исправим все CRC
+            if is_del != -1:
+                fixCRC(is_del)
+                exit(0)
+
+
+            # сделаем замену новой нулевой по размеру партиции на данные из файла (до этого нужно сначала прочесть все партиции)
+            # и исправим все CRC
+            if is_add != -1:
+                is_replace = is_add
+                is_replace_offset = 0
+                is_replace_file = is_add_file
+                fin.close()
+
+                partition_replace(is_replace, is_replace_offset, is_replace_file)
+                fixCRC(is_add)
+                exit(0)
+        else:
+            # просто покажем что FW_HDR мы тоже искали но не нашли
+            if FW_HDR == 0:
+                print("\033[91mNVTPACK_FW_HDR\033[0m not found")
+            print("\033[91mBCL1\033[0m not found")
+
+            # смотрим может это прошивка из несжатых данных (ищем "NT9")
+            # uITRON
+            # can present only if NVTPACK_FW_HDR and NVTPACK_FW_HDR2 is not found (outdate FW)
+            # from start of FW can be "BCL1" or NVTPACK_BININFO_HDR
+            # if first bytes of NVTPACK_BININFO_HDR pBinInfo->BinInfo_1 is "NT9" it means uncompressed data
+            fin.seek(0, 0)
+            code_entry = struct.unpack('<I', fin.read(4))[0] # code_entry_address
+            fin.seek(0x50 - 4, 1) # reserved
+            chip_name = str(struct.unpack('8s', fin.read(8))[0])[2:-1] #отрезает b` `
+
+            if chip_name[:3] == 'NT9':
+                fin.seek(8, 1) # version = FFFFFFFF or 10000000
+                release_date = str(struct.unpack('8s', fin.read(8))[0])[2:-1] #отрезает b` `
+                file_length = struct.unpack('<I', fin.read(4))[0] # in bytes
+                if (struct.unpack('<H', fin.read(2))[0] == 0xAA55):
+                    read_CRC = struct.unpack('<H', fin.read(2))[0] # считали CRC из смещения 0x6E
+                    CRC = MemCheck_CalcCheckSum16Bit(in_file, 0, file_length, 0x6E) # расчитаем CRC для данных партиции
+                else:
+                    read_CRC = 0 # если признака наличия CRC (0xAA55) не нашли
+                    CRC = 0
+
+                temp_parttype = 'Raw data \"\033[93m' + chip_name + ' ' + release_date + '\033[0m\"'
+                partitions_count = 1
+                
+                part_startoffset.append(0)
+                part_size.append(file_length)
+                part_id.append(0)
+                part_endoffset.append(part_size[0])
+
+                part_type.append(temp_parttype)
+                part_crc.append(read_CRC)
+                part_crcCalc.append(CRC)
+            else:
+                # проверим может это файл загрузчика LD9xxxxA.bin
+                fin.seek(0, 0)
+                first2bytes = struct.unpack('>H', fin.read(2))[0] # 28 00
+                if first2bytes == 0x2800:
+                    read1 = struct.unpack('>H', fin.read(2))[0]
+                    fin.read(2)
+                    read2 = struct.unpack('>H', fin.read(2))[0]
+                    BCL1_offset = struct.unpack('<I', fin.read(4))[0] # in bootloader - here is a offset to start BCL1 partition
+                    constant = struct.unpack('>I', fin.read(4))[0] # always 00 05 80 E0
+                    fin.read(2)
+                    read3 = struct.unpack('>H', fin.read(2))[0]
+                    fin.seek(0x30, 0) # goto 55AA offset
+                    read55AA = struct.unpack('>H', fin.read(2))[0] #если тут 55AA то за ним 2 байта CRC
+                    if read1 == read2 and read1 == read3 and constant == 0x000580E0 and read55AA == 0x55AA:
+                        # all OK, it is a bootloader probably
+                        print('Input file detects as \033[93mBOOTLOADER\033[0m')
+                        FW_BOOTLOADER = 1
+
+                        part_startoffset.append(BCL1_offset)
+                        fin.seek(BCL1_offset + 0xC, 0)
+                        part_size.append(struct.unpack('>I', fin.read(4))[0] + 0x10)  # + 0x10 потому что мы будем показывать размер партиции с заголовком а не размер данных внутри BCL1
+                        part_id.append(0)
+                        part_endoffset.append(BCL1_offset + part_size[0])
+
+                        fin.seek(0x24, 0)
+                        orig_file_size = struct.unpack('<I', fin.read(4))[0] # read proper filesize from header
+                        total_file_size = os.path.getsize(in_file)
+                        print('Bootloader required file size \033[93m{:,}\033[0m bytes'.format(orig_file_size), end='')
+                        if(total_file_size != orig_file_size):
+                            print(', this file size \033[94m{:,}\033[0m bytes'.format(total_file_size))
+                        else:
+                            print(', this file size \033[92m{:,}\033[0m bytes'.format(total_file_size))
+
+                        # тоже обязательно всегда считать - checksum_value глобальная переменная с CRC всего файла, используется при замене партиций для пересчета CRC всего файла, у загрузчика тоже
+                        fin.seek(0x32, 0)
+                        checksum_value = struct.unpack('<H', fin.read(2))[0] # read CRC as little-endian
+                        # если есть команда извлечь или заменить или распаковать или запаковать партицию то CRC не считаем чтобы не тормозить
+                        if (is_extract == -1 & is_replace == -1 & is_uncompress == -1 & is_compress == -1):
+                            CRC_FW = MemCheck_CalcCheckSum16Bit(in_file, 0, orig_file_size, 0x32)
+                            if checksum_value == CRC_FW:
+                                print('Bootloader file ORIG_CRC:\033[93m0x%04X\033[0m CALC_CRC:\033[92m0x%04X\033[0m' % (checksum_value, CRC_FW))
+                            else:
+                                print('Bootloader file ORIG_CRC:\033[93m0x%04X\033[0m CALC_CRC:\033[91m0x%04X\033[0m' % (checksum_value, CRC_FW))
+
+                        bootpart, somecrc = GetPartitionInfo(BCL1_offset, part_size[0], 0, 1)
+                        if bootpart != '':
+                            partitions_count = 1 # значит у нас только 1 партиция - BCL1 (а у загрузчика так и есть всегда)
+                    else:
+                        exit(0) # ничего не найдено
+                else:
+                    exit(0) # ничего не найдено
+
+
+    if FW_HDR2 == 1:
+        if is_silent != 1:
+            print("\033[93mNVTPACK_FW_HDR2\033[0m found")
+
+        # NVTPACK_FW_HDR2_VERSION check
+        if struct.unpack('<I', fin.read(4))[0] == NVTPACK_FW_HDR2_VERSION:
+            if is_silent != 1:
+                print("\033[93mNVTPACK_FW_HDR2_VERSION\033[0m found")
+        else:
+            print("\033[91mNVTPACK_FW_HDR2_VERSION\033[0m not found")
+            exit(0)
+        
+        NVTPACK_FW_HDR2_size = struct.unpack('<I', fin.read(4))[0]
+        partitions_count = struct.unpack('<I', fin.read(4))[0]
+        total_file_size = struct.unpack('<I', fin.read(4))[0]
+        orig_file_size = total_file_size
+        checksum_method = struct.unpack('<I', fin.read(4))[0]
+        checksum_value = struct.unpack('<I', fin.read(4))[0]
+        print('Found \033[93m%i\033[0m partitions' % partitions_count)
+        print('Firmware file size \033[93m{:,}\033[0m bytes'.format(total_file_size))
+    
+    
+        # если есть команда извлечь или заменить или распаковать или запаковать партицию то CRC не считаем чтобы не тормозить
+        if (is_extract == -1 & is_replace == -1 & is_uncompress == -1 & is_compress == -1 & is_add == -1 & is_del == -1):
+            CRC_FW = MemCheck_CalcCheckSum16Bit(in_file, 0, total_file_size, 0x24)
+            if checksum_value == CRC_FW:
+                print('Firmware file ORIG_CRC:\033[93m0x%04X\033[0m CALC_CRC:\033[92m0x%04X\033[0m' % (checksum_value, CRC_FW))
+            else:
+                print('Firmware file ORIG_CRC:\033[93m0x%04X\033[0m CALC_CRC:\033[91m0x%04X\033[0m' % (checksum_value, CRC_FW))
+
+
+        # read partitions table info
+        fin.seek(NVTPACK_FW_HDR2_size, 0)
+
+
+        # если хотим добавить партицию проверим сначала что файл с новой партицией существует
+        if is_add != -1:
+            # если имя файла для данных новой партиции не переопределено в параметрах запуска то используем стандартное имя для извлекаемых партиций через "-x"
+            if is_add_file == '':
+                if workdir != '':
+                    is_add_file = workdir + '/' + in_file + '-partitionID' + str(is_add)
+                else:
+                    is_add_file = in_file + '-partitionID' + str(is_add)
+            
+            if not os.path.isfile(is_add_file):
+                print('\033[91m%s file does not found, exit\033[0m' % is_add_file)
+                exit(0)
+
+
+        is_new_part_added = 0
+        is_part_deleted = 0
+        delete_start = 0
+        delete_end = 0
+        padding = 0
+        # считываем таблицу партиций (не только при добавлении партиции а всегда)
+        for a in range(partitions_count):
+            part_startoffset_read = struct.unpack('<I', fin.read(4))[0]
+            part_size_read = struct.unpack('<I', fin.read(4))[0]
+            part_id_read = struct.unpack('<I', fin.read(4))[0]
+
+            # если еще не добавляли но хотим добавить партицию
+            if (is_add != -1 and is_new_part_added == 0): # тут is_add = id добавляемой партиции
+                if(a > 0):
+                    last_read_id = part_id[a-1]
+                else:
+                    last_read_id = -1 # не было еще ничего раньше
+                if(last_read_id < is_add and part_id_read > is_add): # нашли между какими id добавлять новый несуществующий
+                    # добавим новую партицию нулевого размера, поэтому оффсет такой же как у след. партиции
+                    part_startoffset.append(part_startoffset_read)
+                    part_size.append(0) # добавим новую партицию пока что нулевого размера
+                    part_id.append(is_add)
+                    part_endoffset.append(part_startoffset_read) # т.к. размер = 0 (пока что)
+                    is_new_part_added = 1
+
+            # добавляем все существующие в файле партиции но если только не хотим удалить текущую обрабатываемую партицию
+            if is_del == -1 or is_del != part_id_read:
+                part_startoffset.append(part_startoffset_read - (delete_end - delete_start)) # сдвинем на размер удаляемой партиции + паддинг + 0000 в конце(если есть)
+                part_size.append(part_size_read)
+                part_id.append(part_id_read)
+                part_endoffset.append(part_startoffset_read + part_size_read - (delete_end - delete_start)) # сдвинем на размер удаляемой партиции + паддинг + 0000 в конце(если есть)
+            else:
+                is_part_deleted = 1
+                delete_start = part_startoffset_read
+                print('Delete partition ID %i at 0x%08X' % (is_del, delete_start))
+                if a == partitions_count - 1: # если удаляем последнюю партицию
+                    delete_end = total_file_size
+                else:
+                    delete_end = struct.unpack('<I', fin.read(4))[0] # = началу следующей за удаляемой партиции
+                    fin.seek(-4, 1)
+        
+        # если хотим добавить партицию с ID больше чем у последней партиции (т.е. добавить в конец)
+        if is_add != -1 and is_new_part_added == 0 and is_add > part_id[partitions_count-1]:
+            # добавим новую партицию нулевого размера
+            # при добавлении между существующими партициями новая встанет на смещение последующей, а та уже выровнена по 4 байтам и таблица расширится на 12 байт что кратно 4 т.е. следующие смещения не пострадают
+            # а вот при добавлении в конец прошики это нужно сделать самим
+            # изначально использовалось part_endoffset[partitions_count-1] но попадаются партиции с 00 в конце уже после data - пока перешел на размер файла total_file_size (он еще не увеличен тут)
+            padding = 4 - (total_file_size % 4)
+            if padding == 4: padding = 0 # при использ. total_file_size padding д.б. всегда = 0
+
+            part_startoffset.append(total_file_size + padding)
+            part_size.append(0)
+            part_id.append(is_add)
+            part_endoffset.append(total_file_size + padding) # т.к. размер = 0 (пока что)
+            is_new_part_added = 1
+
+
+        # перезапишем файл с новой таблицей партиций изменив смещения партиций на -12 байт(размер удалённой записи)
+        if is_del != -1:
+            if is_part_deleted == 0:
+                print('\033[91mPartititon with ID=%i is not found\033[0m' % (is_del))
+                fin.close()
+                exit(0)
+            else:
+                fin.close()
+                fin = open(in_file, 'r+b') # именно r+b для ЗАМЕНЫ данных
+                fin.seek(NVTPACK_FW_HDR2_size + partitions_count*12, 0)
+                read_end1 = fin.read(delete_start - (NVTPACK_FW_HDR2_size + partitions_count*12)) # считали всё до удаления
+                fin.seek((delete_end - delete_start), 1) # пропустили размер от начала удаляемой партиции до начала следующей партиции (если пропустим до конца удаляемой то могут остаться padding 00 которые окажутся в начале след. партиции)
+                read_end2 = fin.read() # считали всё до конца, если удаляем посл. партицию тут д.б. пусто
+
+                partitions_count -= 1 # т.к. удалили партицию
+                total_file_size -= 12 + (delete_end - delete_start) # а orig_file_size не меняем чтобы при фиксе CRC всего файла показать разницу размеров старого и нового файла
+                # запишем новое кол-во партиций и новый размер файла
+                fin.seek(0x18, 0)
+                fin.write(struct.pack('<I', partitions_count))
+                fin.write(struct.pack('<I', total_file_size))
+
+                fin.seek(NVTPACK_FW_HDR2_size, 0) # на начало таблицы партиций
+                # пишем новые данные о партициях [part_startoffset, part_size, part_id]
+                for a in range(partitions_count):
+                    part_startoffset[a] = part_startoffset[a] - 12 # после удаления партиции всё будет сдвинуто на 12 байт записи о ней в таблице
+                    part_endoffset[a] = part_endoffset[a] - 12  # после удаления партиции всё будет сдвинуто на 12 байт записи о ней в таблице
+                    fin.write(struct.pack('<I', part_startoffset[a]))
+                    fin.write(struct.pack('<I', part_size[a]))
+                    fin.write(struct.pack('<I', part_id[a]))
+                fin.write(read_end1) # дописываем данные
+                fin.write(read_end2) # дописываем данные
+                fin.truncate() # удаляем лишние данные в оригинальном большом файле
+                fin.close()
+
+
+        # перезапишем файл с новой таблицей партиций изменив смещения партиций на 12 байт(размер записи о новой партиции)
+        if is_add != -1:
+            if(is_new_part_added == 0):
+                if is_add in part_id:
+                    print('\033[91mPartititon with ID=%i already exist. Use \033[93m-r\033[91m for replace\033[0m' % (is_add))
+                else:
+                    print('\033[91mCould not add partititon with ID=%i\033[0m' % (is_add))
+                fin.close()
+                exit(0)
+            else:
+                fin.close()
+                fin = open(in_file, 'r+b') # именно r+b для ЗАМЕНЫ данных
+                fin.seek(NVTPACK_FW_HDR2_size + partitions_count*12, 0)
+                read_end = fin.read() # считали всё что после старой таблицы партиций
+
+                partitions_count += 1 # т.к. добавили партицию
+                total_file_size += 12 # а orig_file_size не меняем чтобы при фиксе CRC всего файла показать разницу размеров старого и нового файла
+                # запишем новое кол-во партиций и новый размер файла
+                fin.seek(0x18, 0)
+                fin.write(struct.pack('<I', partitions_count))
+                fin.write(struct.pack('<I', total_file_size))
+
+                fin.seek(NVTPACK_FW_HDR2_size, 0) # на начало таблицы партиций
+                # пишем новые данные о партициях [part_startoffset, part_size, part_id]
+                for a in range(partitions_count):
+                    part_startoffset[a] = part_startoffset[a] + 12 # после добавления новой партиции всё будет сдвинуто на 12 байт записи о ней в таблице
+                    part_endoffset[a] = part_endoffset[a] + 12  # после добавления новой партиции всё будет сдвинуто на 12 байт записи о ней в таблице
+                    fin.write(struct.pack('<I', part_startoffset[a]))
+                    fin.write(struct.pack('<I', part_size[a]))
+                    fin.write(struct.pack('<I', part_id[a]))
+                fin.write(read_end) # дописываем данные
+                # дописываем нулевые байты padding перед новой последней партицией для выравнивения ее адреса смещения по 4 байтам
+                fin.write(b'\x00' * padding)
+                fin.close()
+
+
+        # read each partition info
+        for a in range(partitions_count):
+            GetPartitionInfo(part_startoffset[a], part_size[a], part_id[a], 1)
+
+
+        # исправим все CRC
+        if is_del != -1:
+            fixCRC(is_del)
+            exit(0)
+
+
+        # сделаем замену новой нулевой по размеру партиции на данные из файла (до этого нужно сначала прочесть все партиции)
+        # и исправим все CRC
+        if is_add != -1:
+            is_replace = is_add
+            is_replace_offset = 0
+            is_replace_file = is_add_file
+            fin.close()
+
+            partition_replace(is_replace, is_replace_offset, is_replace_file)
+            fixCRC(is_add)
+            exit(0)
+
+
+        # если есть команда извлечь или заменить или распаковать или запаковать партицию то CRC не считаем чтобы не тормозить
+        #if (is_extract == -1 & is_replace == -1 & is_uncompress == -1 & is_compress == -1):
+        #    # looking into dtb partition for partition id - name - filename info
+        #    SearchPartNamesInDTB(partitions_count)
+
+
+
+
+    # для всех - и для FW_HDR и для FW_HDR2
+
+    # extract partition by ID to outputfile
+    if is_extract != -1:
+        fin.close()
+        if is_extract_all != 1:
+            # extract partition by ID
+            partition_extract(is_extract, is_extract_offset)
+        else:
+            # extract all partitions
+            for part_nr in range(partitions_count):
+                partition_extract(part_id[part_nr], -1) # -1 в функции преобразуется в 0, нужен чтобы не писать "from 0x%08X + 0x%08X to file"
+        exit(0)
+
+
+    # replace partition by ID with inputfile
+    if is_replace != -1:
+        fin.close()
+        partition_replace(is_replace, is_replace_offset, is_replace_file)
+        exit(0)
+
+
+    # uncompress partition by ID
+    if is_uncompress != -1:
+        part_nr = -1
+        for a in range(partitions_count):
+            if part_id[a] == is_uncompress:
+                part_nr = a
+                break
+        if part_nr != -1:
+            if workdir != '':
+                out_file = workdir + '/' + in_file + '-uncomp_partitionID' + str(part_id[part_nr])
+            else:
+                out_file = in_file + '-uncomp_partitionID' + str(part_id[part_nr])
+            
+            if is_silent != 1:
+                if is_uncompress_offset != -1:
+                    print('Uncompress partition ID %i from 0x%08X + 0x%08X to \033[93m%s\033[0m' % (part_id[part_nr], part_startoffset[part_nr], is_uncompress_offset, out_file))
+                else:
+                    print('Uncompress partition ID %i from 0x%08X to \033[93m%s\033[0m' % (part_id[part_nr], part_startoffset[part_nr], out_file))
+
+            # if offset not defined - auto skip CKSM header size (0x40 bytes)
+            if is_uncompress_offset == -1:
+                fin.seek(part_startoffset[part_nr], 0)
+                FourCC = fin.read(4)
+                # skip CKSM header
+                if FourCC == b'CKSM':
+                    is_uncompress_offset = 0x40 # CKSM header size
+                    if is_silent != 1:
+                        print('Auto skip CKSM header: 64 bytes')
+                else:
+                    is_uncompress_offset = 0 # if start offset not defined set it to 0
+
+            uncompress(part_startoffset[part_nr] + is_uncompress_offset, out_file, part_size[part_nr] - is_uncompress_offset)
+
+        else:
+            print('\033[91mCould not find partiton with ID %i\033[0m' % is_uncompress)
+        fin.close()
+        exit(0)
+
+
+    # compress partition by ID and merge to FW file
+    if is_compress != -1:
+        part_nr = -1
+        for a in range(partitions_count):
+            if part_id[a] == is_compress:
+                part_nr = a
+                break
+        if part_nr != -1:
+            if workdir != '':
+                in2_file = workdir + '/' + in_file + '-uncomp_partitionID' + str(part_id[part_nr])
+            else:
+                in2_file = in_file + '-uncomp_partitionID' + str(part_id[part_nr])
+
+            if is_silent != 1:
+                print('Compress \033[93m%s\033[0m to partition ID %i at 0x%08X' % (in2_file, part_id[part_nr], part_startoffset[part_nr]))
+
+            compress(part_nr, in2_file)
+
+        else:
+            print('\033[91mCould not find partiton with ID %i\033[0m' % is_compress)
+        fin.close()
+        exit(0)
+
+
+    # fix CRC values for partitions and whole firmware file
+    if fixCRC_partID != -1:
+        # fix partitions CRC
+        for a in range(partitions_count):
+            if part_crc[a] != part_crcCalc[a]:
+                # fix CRC for uboot
+                if part_type[a] == 'uboot':
+                    fin = open(in_file, 'r+b')
+                    fin.seek(part_startoffset[a] + 0x36E, 0)
+                    fin.write(struct.pack('<H', part_crcCalc[a]))
+                    fin.close()
+                    part_type[a] += ', \033[94mCRC fixed\033[0m'
+                # fix CRC for MODELEXT
+                if part_type[a][:17] == '\033[93mMODELEXT\033[0m':
+                    fin = open(in_file, 'r+b')
+                    fin.seek(part_startoffset[a] + 0x36, 0)
+                    fin.write(struct.pack('<H', part_crcCalc[a]))
+                    fin.close()
+                    part_type[a] += ', \033[94mCRC fixed\033[0m'
+                # fix CRC for CKSM
+                if part_type[a][:13] == '\033[93mCKSM\033[0m':
+                    fin = open(in_file, 'r+b')
+                    fin.seek(part_startoffset[a] + 0xC, 0)
+                    fin.write(struct.pack('<I', part_crcCalc[a]))
+                    fin.close()
+                    part_type[a] += ', \033[94mCRC fixed\033[0m'
+                # fix CRC for BCL1
+                if part_type[a][:13] == '\033[93mBCL1\033[0m':
+                    # no need to fix for bootloader BCL1 partition (here is 00 00 CRC as I seen)
+                    if FW_BOOTLOADER == 0:
+                        fin = open(in_file, 'r+b')
+                        fin.seek(part_startoffset[a] + 0x4, 0)
+                        fin.write(struct.pack('<H', part_crcCalc[a]))
+                        fin.close()
+                        part_type[a] += ', \033[94mCRC fixed\033[0m'
+                # fix CRC for Raw data partition
+                if part_type[a][:8] == 'Raw data':
+                    fin = open(in_file, 'r+b')
+                    fin.seek(part_startoffset[a] + 0x6E, 0)
+                    fin.write(struct.pack('<H', part_crcCalc[a]))
+                    fin.close()
+                    part_type[a] += ', \033[94mCRC fixed\033[0m'
+
+
+        # fix CRC for whole file
+        if FW_HDR2 == 1:
+            CRC_FW = MemCheck_CalcCheckSum16Bit(in_file, 0, total_file_size, 0x24)
+            if checksum_value == CRC_FW:
+                print('Firmware file ORIG_CRC:\033[93m0x%04X\033[0m CALC_CRC:\033[92m0x%04X\033[0m' % (checksum_value, CRC_FW))
+            else:
+                fin = open(in_file, 'r+b')
+                fin.seek(0x24, 0) # for NVTPACK_FW_HDR2
+                fin.write(struct.pack('<I', CRC_FW))
+                fin.close()
+                print('Firmware file ORIG_CRC:\033[93m0x%04X\033[0m CALC_CRC:\033[91m0x%04X\033[0m, \033[94mCRC fixed\033[0m' % (checksum_value, CRC_FW))
+        else:
+            if FW_HDR == 1:
+                CRC_FW = MemCheck_CalcCheckSum16Bit(in_file, part_size[0], NVTPACK_FW_HDR_AND_PARTITIONS_size, 0x14)
+                if checksum_value == CRC_FW:
+                    print('NVTPACK_FW_HDR + Partitions table ORIG_CRC:\033[93m0x%04X\033[0m CALC_CRC:\033[92m0x%04X\033[0m' % (checksum_value, CRC_FW))
+                else:
+                    fin = open(in_file, 'r+b')
+                    fin.seek(part_size[0] + 0x14, 0) # for NVTPACK_FW_HDR
+                    fin.write(struct.pack('<I', CRC_FW))
+                    fin.close()
+                    print('NVTPACK_FW_HDR + Partitions table ORIG_CRC:\033[93m0x%04X\033[0m CALC_CRC:\033[91m0x%04X\033[0m, \033[94mCRC fixed\033[0m' % (checksum_value, CRC_FW))
+            else:
+                if FW_BOOTLOADER == 1:
+                    total_file_size = os.path.getsize(in_file)
+                    CRC_FW = MemCheck_CalcCheckSum16Bit(in_file, 0, total_file_size, 0x32)
+                    if checksum_value == CRC_FW:
+                        print('Bootloader file ORIG_CRC:\033[93m0x%04X\033[0m CALC_CRC:\033[92m0x%04X\033[0m' % (checksum_value, CRC_FW))
+                    else:
+                        fin = open(in_file, 'r+b')
+                        fin.seek(0x32, 0) # for bootloader only
+                        fin.write(struct.pack('<H', CRC_FW))
+                        fin.close()
+                        print('Bootloader file ORIG_CRC:\033[93m0x%04X\033[0m CALC_CRC:\033[91m0x%04X\033[0m, \033[94mCRC fixed\033[0m' % (checksum_value, CRC_FW))
+    # exit не делаем чтобы показать информацию по партициям и где CRC были исправлены
+
+
+    fin.close()
+
+
+
+    # показываем информацию о прошивке
+    # если вообще что-то нашли
+    if partitions_count > 0:
+        # если что-то нашли в dtb то выводим расширенную информацию
+        if len(dtbpart_name) != 0:
+            print(' -------------------------------------------------- PARTITIONS INFO ---------------------------------------------------')
+            print('|  ID   NAME            START_OFFSET  END_OFFSET         SIZE       ORIG_CRC   CALC_CRC              TYPE              |')
+            print(' ----------------------------------------------------------------------------------------------------------------------')
+            for a in range(partitions_count):
+                if part_crc[a] == part_crcCalc[a]:
+                    color = '92m' # green
+                else:
+                    color = '91m' # red
+                # есть ли такой индекс в именах партиций
+                if len(dtbpart_name) > part_id[a]:
+                    curr_partition_name = dtbpart_name[part_id[a]]
+                else:
+                    curr_partition_name = ''
+                print("  %3i   %-15s  0x%08X - 0x%08X     %+11s     0x%04X     \033[%s0x%04X\033[0m     %s" % (part_id[a], curr_partition_name, part_startoffset[a], part_endoffset[a], '{:,}'.format(part_size[a]), part_crc[a], color, part_crcCalc[a], part_type[a]))
+            print(" ----------------------------------------------------------------------------------------------------------------------")
+        # если dtb нет - то информацию без имен партиций
+        else:
+            print(" -------------------------------------------------- PARTITIONS INFO ---------------------------------------------------")
+            print("|  ID   START_OFFSET  END_OFFSET         SIZE       ORIG_CRC   CALC_CRC                        TYPE                    |")
+            print(" ----------------------------------------------------------------------------------------------------------------------")
+            for a in range(partitions_count):
+                if part_crc[a] == part_crcCalc[a]:
+                    color = '92m' # green
+                else:
+                    color = '91m' # red
+                print("  %3i    0x%08X - 0x%08X     %+11s     0x%04X     \033[%s0x%04X\033[0m     %s" % (part_id[a], part_startoffset[a], part_endoffset[a], '{:,}'.format(part_size[a]), part_crc[a], color, part_crcCalc[a], part_type[a]))
+            print(" ----------------------------------------------------------------------------------------------------------------------")
+
+
+
+if __name__ == "__main__":
+    #startTime = datetime.now()
+    main()
+    #endTime = datetime.now()
+    #print("elapsed: %s" % str(endTime - startTime))
