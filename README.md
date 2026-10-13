@@ -17,7 +17,8 @@ Not to mention the HDMI ports sometimes works sometimes doesn't.
 ## What you'll get 
 - [mb230-inspector](mb230_inspector.py). A Python app to help you analyze the dump files extracted from your MB230 TV. **Remember, might not work and/or contain bugs**
 - [RESEARCH.MD](RESEARCH.MD) A full overview with the finding during my investigation (hint: 🔑 gold mine )
-- 🚀 Downgrading info, see bellow! 
+- [ARCHITECTURE.MD](ARCHITECTURE.md) A detailed architecture spec based on my own analysis. Kudos to https://clixad.io/ for FREE LLM usage. 
+- 🚀 Downgrading info, see bellow!
 
 ## Tools
 - [Vestel Profile Toolbox (TommyData)](https://www.bekozap.com/hacking-the-software-of-vestel-tv-7/) - tested and working, some hex values are not displayed, is an old app and my TV was released on 2019. I bet if I do some digging I could update the dictionary.ini to display new values.
