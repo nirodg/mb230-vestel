@@ -22,3 +22,7 @@ opentv_launcher: opentv_launcher.c
 
 clean:
 	rm -f opentv_launcher
+
+# T0 proof: framebuffer picture, no GPU / no vendor libs (plain libc).
+fbshow: fbshow.c
+	$(CC) -O2 -marm -mfloat-abi=hard $< -o $@

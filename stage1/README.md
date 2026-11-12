@@ -49,6 +49,23 @@ NOT commit vendor blobs.** Copy them from your own TV's dump into
 4. Logs: `/tmp/opentv_stage1.log` on the TV (readable via the gdbserver/
    CIFS dev path or a later debug dump).
 
+## Validation ladder (any rung = "it works")
+First boot does not need the GPU. Climb from cheapest to richest; each
+rung on its own validates that our userland runs from USB and owns the
+screen:
+
+- **T0 — framebuffer picture** (`fbshow`, plain libc → `/dev/fb0`, no
+  vendor libs): a colour pattern or raw image on the panel. Cheapest
+  proof we control display output.
+- **T1 — console / shell on screen**: a Busybox `getty`/`sh` on the
+  framebuffer console (or serial). Proves interactive userland control.
+  A "classic shell" or a minimal lightweight desktop here is enough.
+- **T2 — GPU reuse** (`opentv_launcher`, EGL/fbdev GLES2 → stock
+  `libmali.so`): the triangle. Unblocks the real compositor/UI.
+
+Point `board/run.sh` at `fbshow` first, then `opentv_launcher` once T0
+passes.
+
 ## Go/No-Go for the PoC
 - **GO signal:** triangle renders → stock `libmali.so` is usable from our
   process; Stage 2 (real compositor/launcher) is unblocked.

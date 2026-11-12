@@ -23,8 +23,9 @@ own launcher instead of `aurora.elf`. Keep `/vendor` + `/vendor2`
 mounted and reuse proprietary libs via `LD_LIBRARY_PATH`/`dlopen`.
 Fallback/dev channel: the `/conf/remote.txt` gdbserver+CIFS path.
 Goal: our process draws to the framebuffer/Mali and takes remote input,
-on hardware, reversibly. Success = a visible "hello" UI with nothing
-written to NAND.
+on hardware, reversibly. Success = **any** sign of our userland owning the screen with nothing
+written to NAND: a framebuffer picture (T0), a shell/lightweight desktop
+on the panel (T1), or the GLES launcher (T2). See `stage1/`.
 
 ## Stage 2 — Minimal usable system
 Map the reusable surface: display/compositor (`fb*`, `mali0`, `ndppq`),
