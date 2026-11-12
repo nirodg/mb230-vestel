@@ -45,3 +45,29 @@ LAN-only share (`hosts allow` is set), a dedicated nologin user, read-only
 export. Tear it down when done: remove the `[mb230cifs]` block from
 `/etc/samba/smb.conf`, `smbpasswd -x mb230`, `rm -rf /srv/mb230cifs`.
 Don't expose it to the internet.
+
+## How the TV reaches the PC (analysis) + failure modes
+`run_aurora.sh` (triggered by `/conf/remote.txt`) connects over **eth0
+(cable) only** — Wi-Fi is never used:
+`insmod cifs.ko; ifconfig eth0 down; ifconfig eth0 hw ether D4:E2:CC:EC:45:E9;
+ifconfig eth0 up; udhcpc ...; mount -t cifs //PC/mb230cifs /conf/remotelf;
+/conf/remotelf/aurora.elf`.
+
+Failure modes (seen as: reboot loop, NO Samba connection):
+1. **Blocking `udhcpc`** (foreground, no timeout) at early boot; the forced
+   `eth0 down`+MAC change renegotiates the link. If a lease is slow, the UI
+   app blocks, `idtv` never readies, and the **watchdog reboots** before it
+   reaches the PC. This script is in read-only /vendor — we can't fix it.
+2. **SMB version mismatch**: TV `cifs.ko` (kernel 4.9) negotiates SMB1/NT1;
+   modern Samba 4.19 disables SMB1 by default → mount fails. Fix with
+   `smb-compat-oldcifs.conf` (`server min protocol = NT1`, `ntlm auth = yes`).
+3. Our host-`mkfs.ubifs` `/conf` image may mount offline yet be rejected by
+   the TV's stricter kernel UBIFS → early failure. (Restore fixes it.)
+
+Implications for retry:
+- A router **DHCP reservation** for `D4:E2:CC:EC:45:E9` → instant lease,
+  shrinks the blocking-udhcpc window.
+- Apply `smb-compat-oldcifs.conf` before retrying.
+- Consider pivoting off `remote.txt` (it sits on the boot-critical UI path
+  and blocks on network) to the `/buffer/aurora.elf` dwelf hook, which has
+  no early-boot network dependency.
