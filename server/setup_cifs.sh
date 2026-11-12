@@ -7,7 +7,10 @@
 #
 # Prints the remote.txt line to feed to stage1/uboot/track_b_stick.sh.
 set -euo pipefail
-ELF="stage1/launcher/aurora.elf"; USER_NAME="mb230"; SHARE="/srv/mb230cifs"
+# resolve paths from the repo root (this script lives in server/), so it
+# works no matter what directory you launch it from.
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+ELF="$REPO/stage1/launcher/aurora.elf"; USER_NAME="mb230"; SHARE="/srv/mb230cifs"
 while [ $# -gt 0 ]; do case "$1" in
   --elf) ELF="$2"; shift 2;; --user) USER_NAME="$2"; shift 2;;
   --share) SHARE="$2"; shift 2;; *) echo "unknown arg: $1"; exit 1;; esac; done
