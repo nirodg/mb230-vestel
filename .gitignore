@@ -35,3 +35,4 @@ stage1/launcher/opentv_fbshow
 stage1/launcher/stocklibs/
 **/stocklibs/
 vendor-blobs/
+stage1/launcher/aurora.elf

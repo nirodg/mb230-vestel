@@ -46,3 +46,18 @@ This script contains **no** `nand/sf erase`, **no** `nand/sf write`, no
 into RAM and `fatwrite` to the USB stick. If you edit it, keep it that
 way: any `nand erase`/`write` here can **permanently brick** the TV
 (the stock update `.scr` erases XBOOT/U-Boot/SECOS first).
+
+## Track-B prep (staged, NOT armed)
+For the plan to run our launcher via `/conf/remote.txt` (OPENTV.md Stage 2):
+- `../launcher/aurora.c` -> `aurora.elf` (static ARM first payload: fills
+  the framebuffer + logs the live stock env to `/conf/opentv_aurora.log`).
+  Served to the TV over CIFS; no flash write to deliver it.
+- `make_conf_image.sh` rebuilds `/conf` = current dump + `remote.txt`
+  using the TV's exact UBIFS geometry (m=4096 e=253952 c=31 x=lzo),
+  and validates the rebuilt image re-reads. Offline; touches no TV.
+- `conf_write.scr.TEMPLATE` = the ARMED whole-volume `ubi write` of
+  apdat0. Fill placeholders + stage only on explicit go. Keep the
+  original apdat0 dump on the stick as the restore image.
+
+Nothing here is on the stick yet; the stick still carries the read-only
+probe. The `ubi write` is the single risk step and is gated on go.
