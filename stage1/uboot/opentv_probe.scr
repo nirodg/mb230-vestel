@@ -8,10 +8,15 @@
 # dump_*.bin / *.txt files on a PC. If the format is bad U-Boot aborts
 # with no effect. CONFIRMED to execute on hardware 2026-11-12.
 #
+# The dump targets below evolve per investigation. Round 1 (done) took
+# xbootdat[0:8K]/npt/misc/spi. Round 2 (this file) chases the real boot
+# cmdline (full xbootdat), the device tree (fdt0), and the WRITABLE
+# /conf partition (apdat0 = where remote.txt / USB-download state live).
+#
 # RAM scratch 0x3300000 = DRAM load area the stock update script uses.
 # NAND offsets are raw mtd0 offsets from the live `mtdparts` env.
 
-echo OPENTV-PROBE: begin
+echo OPENTV-PROBE v2: begin
 
 # 0) marker: proves a custom .scr ran at all ("NVOK")
 mw.l 0x3300000 0x4b4f564e
@@ -21,22 +26,18 @@ fatwrite usb 0:auto 0x3300000 opentv_probe_ran.bin 4
 env export -t -s 0x8000 0x3310000
 fatwrite usb 0:auto 0x3310000 opentv_uboot_env.txt 0x8000
 
-# 2) xbootdat (recovery kernel cmdline / boot params) @0x2c0000, 8 KiB
-nand read 0x3300000 0x2c0000 0x2000
-fatwrite usb 0:auto 0x3300000 dump_xbootdat.bin 0x2000
+# 2) FULL xbootdat @0x2c0000, 1.25 MiB (saved recovery kernel cmdline)
+nand read 0x3300000 0x2c0000 0x140000
+fatwrite usb 0:auto 0x3300000 dump_xbootdat_full.bin 0x140000
 
-# 3) npt (NAND partition table) @0x400000, 4 KiB
-nand read 0x3300000 0x400000 0x1000
-fatwrite usb 0:auto 0x3300000 dump_npt.bin 0x1000
+# 3) fdt0 device tree @0xac0000, 512 KiB (/chosen bootargs)
+nand read 0x3300000 0xac0000 0x80000
+fatwrite usb 0:auto 0x3300000 dump_fdt0.bin 0x80000
 
-# 4) misc @0x4c0000, 4 KiB
-nand read 0x3300000 0x4c0000 0x1000
-fatwrite usb 0:auto 0x3300000 dump_misc.bin 0x1000
+# 4) apdat0 = /conf writable partition @0xe340000, 10 MiB
+#    (remote.txt gdbserver/CIFS path + USB-download state; read-only here)
+nand read 0x3300000 0xe340000 0xa00000
+fatwrite usb 0:auto 0x3300000 dump_apdat0.bin 0xa00000
 
-# 5) SPI NOR config region 0x0..0x20000 (MAC / panel / config), 128 KiB
-sf probe 0
-sf read 0x3300000 0x0 0x20000
-fatwrite usb 0:auto 0x3300000 dump_spi_0_20000.bin 0x20000
-
-echo OPENTV-PROBE: done
+echo OPENTV-PROBE v2: done
 %

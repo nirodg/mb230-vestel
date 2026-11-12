@@ -19,8 +19,16 @@ userland runs via the *separate* Linux "Run AP from USB" path
 (`../board/run.sh`), not here. See `../../OPENTV.md`.
 
 ## Use `opentv_probe.scr`
-Dumps, all read-only: a run marker, the live U-Boot `env`, and the
-`xbootdat` / `npt` / `misc` NAND regions + SPI `0..0x20000`.
+Dumps, all read-only: a run marker, the live U-Boot `env`, plus
+per-investigation `nand read`/`sf read` targets. The dump list evolves;
+check the script header for the current round.
+- **Round 1 (done):** `xbootdat[0:8K]` (= panel config, not cmdline),
+  `npt`, `misc` (0x0e filler), SPI `0..0x20000` (board id + MAC/keys).
+- **Round 2 (current):** full `xbootdat` (recovery cmdline), `fdt0`
+  (device tree), `apdat0` (= writable `/conf`).
+
+Findings are recorded in `../../ARCHITECTURE.md`. Device secrets found in
+these dumps (MAC, key material) are **never** committed.
 
 ```
 cp stage1/uboot/opentv_probe.scr   <FAT32 stick>/kylo_usb_update.scr

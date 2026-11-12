@@ -88,8 +88,20 @@ Live U‑Boot environment (via `env export`, the compiled‑in default):
 | `mtdparts` | matches the NAND table below |
 
 Repo tool: `stage1/uboot/opentv_probe.scr` (deploy as
-`kylo_usb_update.scr`) — a non‑destructive dump script (marker, env,
-`xbootdat`, `npt`, `misc`, SPI `0..0x20000`).
+`kylo_usb_update.scr`) — a non‑destructive dump script (marker, env, +
+per‑investigation `nand read`/`sf read` → `fatwrite` dumps).
+
+**Dump results (2026‑11‑12, read‑only via this channel):**
+- `xbootdat` first 8 KiB = **panel config** (`PIDX`/`PANL`, interface
+  `VX1_Direct`), *not* the boot cmdline — the saved recovery cmdline is
+  deeper in the 1.25 MiB partition (next dump).
+- `npt` = the on‑flash NAND partition table; names/layout match the
+  `.scr` map below (record = 16‑byte name + LE u32 offset + LE u32 size).
+- SPI `0..0x20000` = XBOOT + board/config block: ids `4ca4BOOT`,
+  `NT72673` / `Novatek_NT72682`, XBOOT build `Nov 07 2019`, config
+  `Jun 17 2020`, `Rev.A`, `v001`. **Also holds a `MAC` field and key
+  material — device secrets, deliberately not reproduced here.**
+- `misc` first 4 KiB = `0x0e` filler (no useful content).
 
 ---
 
