@@ -78,6 +78,20 @@ From the live `/vendor/run.sh` + `run_aurora.sh` and the `/conf` dump.
 For the CyanogenMod-style port, this generalises: each device = find a
 writable volume + a firmware-run hook + a volume-write primitive.
 
+**Recovery net (why the risk step is bounded).** The OK-held update entry
+lives in **U-Boot**, which runs *before* Linux, the app, and the `/conf`
+mount, and sits in a **signed partition the plan never writes**. So a
+broken `aurora.elf` or a corrupt/half-written `/conf` is all downstream:
+power-cycle + hold OK always re-enters the USB update path, from which a
+raw `nand write` of the **saved original `apdat0` dump** restores `/conf`
+byte-for-byte (`stage1/uboot/conf_restore.scr.TEMPLATE`). Net holds only
+while every write stays confined to `apdat0` (never xboot/ddrcfg/secos/
+uboot/fdt/ker/fs0). Prepare the restore stick **before** the first write.
+Worst case even without restoring is a `/conf` factory-reset (settings
+loss), not a brick. (Unverified on hardware: the exact `ubi write` forward
+sequence and whether the firmware auto-reinitialises a bad `/conf` —
+confirm before relying on them.)
+
 ## Stage 3 — "OpenTV" UI
 A proper launcher/compositor (Android-TV / Apple-TV feel): apps grid,
 settings, input switching, media playback via reused codecs. Own design,

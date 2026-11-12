@@ -1,0 +1,26 @@
+# OpenTV /conf RESTORE script  --  *** ARMED: writes apdat0 only ***
+#
+# The recovery net. Writes the SAVED ORIGINAL apdat0 dump byte-for-byte
+# back over the /conf partition, undoing conf_write. Because our dump is
+# the RAW partition image (full UBI device, starts "UBI#"), the exact
+# rollback is a raw nand erase+write of the apdat0 region -- NOT ubi write.
+#
+# Offsets are hard-confined to apdat0 (from mtdparts / the stock .scr):
+#   apdat0 @ nand 0xe340000, size 0xa00000 (10 MiB).
+# They touch NO boot/signed partition, so this cannot brick the boot chain.
+#
+# Recovery works because the OK-held update entry is in U-Boot (signed,
+# never written here) and runs before Linux/app/conf -- so a broken
+# aurora.elf or corrupt /conf cannot stop you re-entering and restoring.
+#
+# Deploy as kylo_usb_update.scr with dump_apdat0.bin (the ORIGINAL dump)
+# on the stick root. Keep THIS stick made BEFORE any conf_write.
+
+echo OPENTV-RESTORE: begin
+
+fatload usb 0:auto 0x3300000 dump_apdat0.bin
+nand erase 0xe340000 0xa00000
+nand write 0x3300000 0xe340000 0xa00000
+
+echo OPENTV-RESTORE: done
+%
