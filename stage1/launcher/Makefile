@@ -18,9 +18,15 @@ ARMFLAGS := -O2 -marm -mfloat-abi=hard
 BOARD := ../board
 
 # T0 — framebuffer picture, plain libc only.
+# Static by default: the TV's glibc vintage is unknown (old 4.9 BSP), so a
+# dynamically-linked binary risks "GLIBC_2.xx not found" / interpreter
+# mismatch. fbshow uses only basic libc (no NSS), so -static is safe and
+# removes that whole failure class. Override with STATIC= for a dynamic build.
+STATIC ?= -static
 fbshow: fbshow.c
-	$(CC) $(ARMFLAGS) $< -o opentv_fbshow
-	@file opentv_fbshow | grep -q ARM && echo "[ok] opentv_fbshow (ARM)" || echo "[!] check arch"
+	$(CC) $(ARMFLAGS) $(STATIC) $< -o opentv_fbshow
+	$(CROSS_COMPILE)strip opentv_fbshow 2>/dev/null || true
+	@file opentv_fbshow | grep -q ARM && echo "[ok] opentv_fbshow (ARM$(if $(STATIC), static,))" || echo "[!] check arch"
 
 # T2 — EGL/fbdev GLES2 via the stock libmali (resolved at runtime on the TV).
 launcher: opentv_launcher.c

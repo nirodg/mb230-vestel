@@ -31,7 +31,8 @@ Toolchain: `sudo apt install gcc-arm-linux-gnueabihf`
 
 ```
 cd stage1/launcher
-make fbshow                      # T0 - needs nothing from the TV
+make fbshow                      # T0 - needs nothing from the TV (static ARM
+                                 #      binary: survives an unknown TV glibc)
 # T2 (optional, later): assemble a BYO sysroot from your TV dump first:
 #   stocklibs/include/EGL/*.h  stocklibs/include/GLES2/*.h   (Khronos headers)
 #   stocklibs/lib/libEGL.so    stocklibs/lib/libGLESv2.so    (from ap0/lib)

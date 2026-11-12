@@ -34,18 +34,26 @@ int main(int argc, char **argv){
     unsigned char *fb = mmap(0, f.smem_len, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
     if(fb==MAP_FAILED){ perror("[opentv] mmap"); return 1; }
 
+    /* The stock driver is usually multi-buffered and parks the VISIBLE
+     * buffer at a nonzero pan offset; writing at smem 0 would hit an
+     * off-screen buffer and show nothing. Draw to the current pan. */
+    long base=(long)v.yoffset*stride + (long)v.xoffset*bpp;
+    fprintf(stderr,"[opentv] pan yoffset=%u xoffset=%u base=%ld\n",v.yoffset,v.xoffset,base);
+
     if(argc>1){                       /* blit a raw w*h*4 image, centred */
         FILE *fp=fopen(argv[1],"rb");
         if(!fp){ perror("[opentv] open img"); return 1; }
         fseek(fp,0,SEEK_END); long n=ftell(fp); fseek(fp,0,SEEK_SET);
         int iw=W, ih=(n/4)/W;         /* assume full-width raw */
-        unsigned char *buf=malloc(n); if(fread(buf,1,n,fp)!=(size_t)n){} fclose(fp);
+        unsigned char *buf=malloc(n);
+        if(!buf){ fprintf(stderr,"[opentv] malloc %ld failed\n",n); return 1; }
+        if(fread(buf,1,n,fp)!=(size_t)n){} fclose(fp);
         for(int y=0;y<ih&&y<H;y++)
-            memcpy(fb+(long)y*stride, buf+(long)y*iw*4, (iw<W?iw:W)*bpp);
+            memcpy(fb+base+(long)y*stride, buf+(long)y*iw*4, (iw<W?iw:W)*bpp);
         (void)ih;
     } else {                          /* colour gradient test pattern */
         for(int y=0;y<H;y++) for(int x=0;x<W;x++){
-            unsigned char *p=fb+(long)y*stride+(long)x*bpp;
+            unsigned char *p=fb+base+(long)y*stride+(long)x*bpp;
             if(bpp>=3){ p[0]=x*255/W; p[1]=y*255/H; p[2]=(x^y)&0xff; if(bpp==4)p[3]=0xff; }
         }
     }

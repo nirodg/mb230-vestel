@@ -49,8 +49,12 @@ fi
 
 # --- T2: GPU reuse via stock libmali (EGL/fbdev GLES2) --------------------
 if [ -x "$HERE/opentv_launcher" ]; then
-    # wait up to ~12s for the GPU nodes the stock driver creates
-    i=0; while [ ! -e /dev/mali ] && [ $i -lt 60 ]; do sleep 0.2; i=$((i+1)); done
+    # wait up to ~12s for the GPU nodes the stock driver creates.
+    # Integer sleeps only: BusyBox `sleep` on embedded builds often lacks
+    # fractional-second support, and `sleep 0.2` would error out instantly
+    # -> the loop would spin with no delay and exec before /dev/mali exists.
+    i=0; while [ ! -e /dev/mali ] && [ $i -lt 12 ]; do sleep 1; i=$((i+1)); done
+    [ -e /dev/mali ] || echo "[opentv] WARN: /dev/mali still absent after ${i}s"
     echo "[opentv] T2: exec opentv_launcher"
     exec "$HERE/opentv_launcher"
 fi
@@ -61,5 +65,24 @@ if [ -x "$HERE/opentv_fbshow" ]; then
     exec "$HERE/opentv_fbshow" ${OPENTV_IMG:+"$HERE/$OPENTV_IMG"}
 fi
 
-echo "[opentv] ERROR: no opentv_fbshow or opentv_launcher on the stick"
+# --- T1 fallback: a shell/console on the framebuffer -----------------------
+# Reached only when NO opentv binary is on the stick. Proves our userland at
+# least owns a text console on the panel, using the stock busybox. Writes
+# nothing to NAND. (The remote is UART-IR, so the shell is for visual proof;
+# a login prompt on the panel is still a valid "we own the screen" result.)
+for TTY in /dev/tty1 /dev/tty0 /dev/console; do
+    if [ -w "$TTY" ]; then
+        echo "[opentv] T1: opening a shell on $TTY"
+        {   echo ""
+            echo "  ===== OpenTV Stage-1 T1 ====="
+            echo "  Our userland runs from USB and owns this console ($TTY)."
+            echo ""
+        } >"$TTY" 2>/dev/null
+        setsid sh -i <"$TTY" >"$TTY" 2>&1 &
+        wait
+        exit 0
+    fi
+done
+
+echo "[opentv] ERROR: no opentv_fbshow/opentv_launcher and no writable console"
 exit 1

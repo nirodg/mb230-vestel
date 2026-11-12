@@ -22,6 +22,9 @@ __pycache__/
 *.log
 device_research.log
 stage1/board/opentv_launcher
+stage1/board/opentv_fbshow
+stage1/launcher/opentv_launcher
+stage1/launcher/opentv_fbshow
 *.o
 
 # BYO vendor blobs — NEVER commit proprietary device libraries.

@@ -46,6 +46,9 @@ int main(void){
     if(d==EGL_NO_DISPLAY){fprintf(stderr,"[opentv] no EGL display\n");return 1;}
     EGLint maj,min; if(!eglInitialize(d,&maj,&min)){fprintf(stderr,"[opentv] eglInitialize failed\n");return 1;}
     fprintf(stderr,"[opentv] EGL %d.%d  vendor=%s\n",maj,min,eglQueryString(d,EGL_VENDOR));
+    /* Select the GLES client API explicitly: if the impl defaults to the
+     * desktop GL API, the ES2 eglCreateContext below fails. */
+    eglBindAPI(EGL_OPENGL_ES_API);
 
     EGLint cfg_attr[]={EGL_SURFACE_TYPE,EGL_WINDOW_BIT,EGL_RED_SIZE,8,EGL_GREEN_SIZE,8,
         EGL_BLUE_SIZE,8,EGL_ALPHA_SIZE,8,EGL_RENDERABLE_TYPE,EGL_OPENGL_ES2_BIT,EGL_NONE};
@@ -58,8 +61,10 @@ int main(void){
 
     EGLint ctx_attr[]={EGL_CONTEXT_CLIENT_VERSION,2,EGL_NONE};
     EGLContext ctx=eglCreateContext(d,cfg,EGL_NO_CONTEXT,ctx_attr);
-    eglMakeCurrent(d,surf,surf,ctx);
-    fprintf(stderr,"[opentv] GL_RENDERER=%s\n",glGetString(GL_RENDERER));
+    if(ctx==EGL_NO_CONTEXT){fprintf(stderr,"[opentv] no context (err 0x%x)\n",eglGetError());return 1;}
+    if(!eglMakeCurrent(d,surf,surf,ctx)){fprintf(stderr,"[opentv] makeCurrent failed (err 0x%x)\n",eglGetError());return 1;}
+    const GLubyte *rend=glGetString(GL_RENDERER);
+    fprintf(stderr,"[opentv] GL_RENDERER=%s\n",rend?(const char*)rend:"(null)");
 
     GLuint prog=glCreateProgram();
     glAttachShader(prog,shader(GL_VERTEX_SHADER,VS));
