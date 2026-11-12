@@ -57,3 +57,11 @@ stick:
 
 clean:
 	rm -f opentv_fbshow opentv_launcher
+
+# aurora.elf — Track-B first payload (static ARM, framebuffer + env log).
+# Build in the glibc-2.23 container (see stage1/uboot/README.md) or with a
+# host armhf toolchain. Static => no glibc/libmali dependency.
+aurora.elf: aurora.c
+	$(CC) $(ARMFLAGS) -static $< -o aurora.elf
+	$(CROSS_COMPILE)strip aurora.elf 2>/dev/null || true
+	@file aurora.elf | grep -q ARM && echo "[ok] aurora.elf (ARM static)" || echo "[!] check arch"
