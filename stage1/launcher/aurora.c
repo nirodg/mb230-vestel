@@ -77,9 +77,15 @@ static void fill_fb(void) {
 int main(int argc, char **argv) {
     write_logs(argc, argv);
     fill_fb();
-    /* keep the picture up a short while, then exit cleanly so we never
-     * wedge the boot if something is watching this process. */
-    sleep(12);
-    write_logs(argc, argv);   /* second stamp: shows we weren't killed early */
-    return 0;
+    /* STAY ALIVE. idtv exiting makes the stock watchdog reboot the TV
+     * (that was the reboot loop). A launcher must not return. Re-fill the
+     * framebuffer periodically (the stock display can pan/flip buffers)
+     * and re-stamp the log so we can see it kept running. */
+    unsigned long i = 0;
+    for (;;) {
+        sleep(5);
+        fill_fb();
+        if ((++i % 6) == 0) write_logs(argc, argv);   /* ~every 30s */
+    }
+    return 0;   /* unreachable */
 }
