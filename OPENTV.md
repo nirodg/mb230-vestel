@@ -35,6 +35,49 @@ Yocto userland (or overlay on the stock rootfs) that boots to a simple
 launcher reusing those blobs. Decide: USB-run only, or a signed-image
 route if keys/exploit ever surface.
 
+## Stage 2 — code-execution surface (MAPPED 2026-11-12)
+
+How to make the stock, secure-booted firmware launch **our** binary with
+the GPU/middleware already up — without touching any signed partition.
+From the live `/vendor/run.sh` + `run_aurora.sh` and the `/conf` dump.
+
+**Firmware-run hooks (each gated by a WRITABLE file):**
+
+| Hook file (writable) | Effect when present |
+|----------------------|---------------------|
+| `/conf/remote.txt` (`isgdb:ip:user:pass`) | `run_aurora.sh` brings up eth0 (MAC `D4:E2:CC:EC:45:E9`), DHCP, `insmod cifs.ko`, mounts `//ip/mb230cifs`, runs **`gdbserver :2345 $REMOTELF/aurora.elf`** = our ELF served from a PC. Best for dev iteration. |
+| `/conf/run_with_dwelf` + `/buffer/aurora.elf` | `appmgr` uses `nvt.app.dwelf.ini` and runs **`/buffer/aurora.elf`** (our ELF from the writable buffer volume). |
+| `/conf/remote_nfs.txt` + `/conf/mac.txt` | starts `telnetd` (network shell). |
+
+(`RUN_SHELL` is hardcoded 0 in the read-only `/vendor/run.sh`; not usable.)
+
+**Write channels to those `/conf` / `/buffer` files:**
+
+| Channel | Can place a hook file? | Risk |
+|---------|------------------------|------|
+| Service-menu USB upload (`MENU 4725`) | **No** — fixed whitelist (`hwprofile/swprofile/PCF/PQF/ptf/AQ/sound`), config only, no arbitrary names/exec | none |
+| U-Boot `ubi write` (our confirmed `.scr` channel) | **Yes, whole-volume only** — U-Boot here has `ubifsload`/`ubifsls` but **no `ubifswrite`**, so a single file can't be inserted; the whole `apdat0`/`buffer` volume must be rewritten | bounded (see below) |
+| A Linux shell | Yes | n/a — we don't have one yet (chicken-and-egg) |
+
+**Plan (the reversible-where-possible route to the launcher):**
+1. Build our launcher as `aurora.elf` (ARM, links stock `libmali` — reuse
+   the Stage-1 T2 launcher; glibc 2.23).
+2. Target `/conf/remote.txt` (dev-friendly: the ELF is served over CIFS
+   from a PC, so iterating the binary needs no reflash).
+3. **Write primitive (the risk step):** rebuild `/conf` as *exactly the
+   current dump + a tiny `remote.txt`* (geometry: PEB 256 KiB, LEB
+   248 KiB, vol `apdat0` id 0 dynamic; `mkfs.ubifs`+`ubinize`), then
+   `ubi write` it via a U-Boot `.scr`. `apdat0` is a **writable data**
+   volume (runtime-written by the app ⇒ not vhash-signed), so this does
+   **not** defeat secure boot and **cannot brick the boot chain**; worst
+   case `/conf` resets to factory. Reversible by writing our saved dump
+   back. This is the first real TV flash write — gated on explicit go.
+4. Normal boot → `run.sh` sees `remote.txt` → runs our `aurora.elf` with
+   the full GPU/middleware env. OpenTV launcher lives.
+
+For the CyanogenMod-style port, this generalises: each device = find a
+writable volume + a firmware-run hook + a volume-write primitive.
+
 ## Stage 3 — "OpenTV" UI
 A proper launcher/compositor (Android-TV / Apple-TV feel): apps grid,
 settings, input switching, media playback via reused codecs. Own design,
