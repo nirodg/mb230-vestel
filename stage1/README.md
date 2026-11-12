@@ -55,6 +55,19 @@ make launcher SYSROOT=./stocklibs
 blobs.** The repo is verified to build on a normal PC (fbshow with libc;
 the launcher's EGL/GLES2 code links against desktop Mesa for host dev).
 
+## One-shot build + stage (recommended)
+
+`make_stick.sh` builds T0 and T2, verifies they match the TV (ARMv7
+EABI5, glibc <= 2.23), lays out `board/`, copies it to the stick, and
+hash-checks the copy. It builds T2 in an `ubuntu:16.04` container when
+the host toolchain is too new, and refuses to stage a binary that needs
+a newer glibc than the TV's.
+
+```
+./stage1/make_stick.sh /media/you/STICK   # build + stage to the stick
+./stage1/make_stick.sh --build-only       # just build into board/
+```
+
 ## Assemble the USB stick (FAT32)
 ```
 <USB>/board/
