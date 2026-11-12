@@ -27,7 +27,16 @@ rung alone validates that our userland runs from USB and owns the screen:
 `board/run.sh` auto-runs **T0 first, then T2** if both are on the stick.
 
 ## Build (on your PC)
-Toolchain: `sudo apt install gcc-arm-linux-gnueabihf`
+Toolchain: `gcc-arm-linux-gnueabihf` **with glibc <= 2.23** (the TV's
+rootfs ships glibc 2.23). A newer toolchain (e.g. Debian bookworm) makes
+T2 require `GLIBC_2.34` and it dies before `main()` on the TV; the
+Makefile now rejects such a build. Ubuntu 16.04 matches exactly:
+```
+docker run --rm -v "$PWD":/w -w /w ubuntu:16.04 bash -c \
+  'apt-get update && apt-get install -y gcc-arm-linux-gnueabihf make file binutils \
+   && make launcher SYSROOT=./stocklibs'
+```
+(T0 is static, so any toolchain works for it.)
 
 ```
 cd stage1/launcher

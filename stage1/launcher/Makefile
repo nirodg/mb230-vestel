@@ -36,10 +36,17 @@ fbshow: fbshow.c
 # /vendor/lib on LD_LIBRARY_PATH so it loads at runtime. GLLIB overrides the
 # lib if a porter's TV has proper shims instead.
 GLLIB ?= -lmali
+TV_GLIBC_MINOR ?= 23
 launcher: opentv_launcher.c
 	$(CC) $(ARMFLAGS) -mfpu=neon -I$(SYSROOT)/include $< -o opentv_launcher \
 	      -L$(SYSROOT)/lib -Wl,-rpath-link,$(SYSROOT)/lib $(GLLIB) -lm
 	@file opentv_launcher | grep -q ARM && echo "[ok] opentv_launcher (ARM)" || echo "[!] check arch"
+	@# The MB230 rootfs ships glibc 2.23. A newer toolchain silently adds
+	@# e.g. __libc_start_main@GLIBC_2.34 and the binary dies before main().
+	@if readelf -V opentv_launcher | grep -Eo 'GLIBC_2\.[0-9]+' | \
+	    awk -F. '$$2>$(TV_GLIBC_MINOR){bad=1} END{exit !bad}'; then \
+	  echo "[!] opentv_launcher needs glibc > 2.$(TV_GLIBC_MINOR) (TV has 2.$(TV_GLIBC_MINOR)) - use an Ubuntu 16.04 toolchain"; \
+	  rm -f opentv_launcher; exit 1; fi
 
 # Copy whatever was built into board/ and (optionally) onto a FAT32 stick.
 stick:
