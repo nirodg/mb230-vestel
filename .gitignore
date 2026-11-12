@@ -1,0 +1,33 @@
+# Firmware images & TV dumps — large, proprietary, never commit
+*.zip
+*.bin
+*.scr
+*.img
+kylo_usb_update.*
+MD30010_*
+dump/
+dumps/
+
+# Device secrets that may appear in dumps
+*.key
+*_hwprofile.bin
+*_swprofile.bin
+etc/shadow
+
+# Python
+__pycache__/
+*.pyc
+
+# Local scratch / build artifacts
+*.log
+device_research.log
+stage1/board/opentv_launcher
+*.o
+
+# BYO vendor blobs — NEVER commit proprietary device libraries.
+# OpenTV ships only original code; porters supply their own TV's libs.
+*.so
+*.so.*
+stage1/launcher/stocklibs/
+**/stocklibs/
+vendor-blobs/
