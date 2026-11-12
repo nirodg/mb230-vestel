@@ -29,9 +29,16 @@ fbshow: fbshow.c
 	@file opentv_fbshow | grep -q ARM && echo "[ok] opentv_fbshow (ARM$(if $(STATIC), static,))" || echo "[!] check arch"
 
 # T2 — EGL/fbdev GLES2 via the stock libmali (resolved at runtime on the TV).
+# Link against libmali.so DIRECTLY, not the libEGL/libGLESv2 shims: on the
+# MB230 those shims are ~2.8 KB hand-built forwarders whose .dynsym has a
+# malformed sh_info, so GNU ld resolves zero symbols from them. libmali.so
+# exports the full EGL+GLES set (SONAME libmali.so), and run.sh puts
+# /vendor/lib on LD_LIBRARY_PATH so it loads at runtime. GLLIB overrides the
+# lib if a porter's TV has proper shims instead.
+GLLIB ?= -lmali
 launcher: opentv_launcher.c
 	$(CC) $(ARMFLAGS) -mfpu=neon -I$(SYSROOT)/include $< -o opentv_launcher \
-	      -L$(SYSROOT)/lib -lEGL -lGLESv2 -lm
+	      -L$(SYSROOT)/lib -Wl,-rpath-link,$(SYSROOT)/lib $(GLLIB) -lm
 	@file opentv_launcher | grep -q ARM && echo "[ok] opentv_launcher (ARM)" || echo "[!] check arch"
 
 # Copy whatever was built into board/ and (optionally) onto a FAT32 stick.

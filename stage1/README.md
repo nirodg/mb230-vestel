@@ -33,9 +33,13 @@ Toolchain: `sudo apt install gcc-arm-linux-gnueabihf`
 cd stage1/launcher
 make fbshow                      # T0 - needs nothing from the TV (static ARM
                                  #      binary: survives an unknown TV glibc)
-# T2 (optional, later): assemble a BYO sysroot from your TV dump first:
-#   stocklibs/include/EGL/*.h  stocklibs/include/GLES2/*.h   (Khronos headers)
-#   stocklibs/lib/libEGL.so    stocklibs/lib/libGLESv2.so    (from ap0/lib)
+# T2: assemble a BYO sysroot from your TV dump first:
+#   stocklibs/include/{EGL,GLES2}/*.h            (Khronos headers)
+#   stocklibs/lib/libmali.so                     (from ap0/lib — REQUIRED)
+#   stocklibs/lib/libEGL.so stocklibs/lib/libGLESv2.so  (optional)
+# On the MB230 the launcher links libmali.so DIRECTLY (-lmali): the stock
+# libEGL/libGLESv2 are 2.8 KB forwarder shims whose .dynsym is malformed,
+# so GNU ld can't link them; libmali exports the full EGL+GLES set itself.
 make launcher SYSROOT=./stocklibs
 ```
 `stocklibs/` and any `*.so` are **git-ignored - never commit vendor
