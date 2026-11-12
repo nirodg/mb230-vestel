@@ -121,6 +121,43 @@ Vulkan and avoid assuming a window system.
   (reuses stock `/vendor/lib` read-only via `LD_LIBRARY_PATH`, sets the
   minimal Mali env, execs `opentv_launcher`). Writes nothing to NAND.
 
+## USB entry points — two distinct mechanisms
+
+The TV exposes **two unrelated USB paths**. Don't conflate them.
+
+**1. U‑Boot auto‑update script (CONFIRMED executing on hardware).**
+Powering on **holding `OK`** makes U‑Boot source a plain‑text
+`kylo_usb_update.scr` from the stick root (`USB AUTO UPDATE!!`). The
+script is **not signature‑checked** — a custom `.scr` runs. Verified with
+a non‑destructive probe that used `fatwrite` to write files back to the
+stick (see `stage1/uboot/opentv_probe.scr`, `ARCHITECTURE.md`). **Scope:
+read‑only.** Boot‑time verification (`verify=y`, vhash, `nvt_sign`,
+`bootsecure`) still blocks booting an unsigned image, and the stock `.scr`
+is a destructive full reflash that erases XBOOT/U‑Boot/SECOS. So this
+channel is a **diagnostics / flash‑dump tool** (`nand read`/`sf read` →
+`fatwrite`), **not** a route to run OpenTV. Treat any flashing `.scr` as
+brick‑risk and out of scope.
+
+**2. Linux "Run AP from USB" (the Stage‑1 route for OpenTV).**
+After the signed kernel + rootfs boot, `startup.sh` runs
+`/media/sda[1]/board/run.sh`. This runs **our userland with the GPU
+already up** — the real OpenTV path. **Gate (important):** `startup.sh`
+takes this branch **only if `/vendor/run.sh` is absent**; on a normal
+boot `ap0` is mounted at `/vendor` and its `run.sh` exists, so the TV
+takes "Run AP from FLASH" and ignores the stick. This is the likely
+reason a first stick test produced no `opentv_stage1.log`. Reaching our
+`board/run.sh` on a stock unit therefore needs the USB branch to actually
+be taken — the open Stage‑1/2 problem to solve next (candidate levers,
+all still USB/reversible where possible: confirm the power‑cycle‑with‑
+stick timing, or the `/conf/remote.txt` gdbserver/CIFS dev path).
+
+> For the CyanogenMod‑style porting model, mechanism **1** is a per‑device
+> **bring‑up/diagnostics** tool (dump this board's flash, env, panel/MAC
+> config non‑destructively); mechanism **2** is where the device
+> **porting layer** actually loads the portable OpenTV core. A new TV's
+> port re‑derives both: its signed‑update trigger (for safe dumps) and
+> its post‑boot "run AP" hook (to launch our userland).
+
 ## Simulation without the TV (QEMU)
 GPU can't be emulated: `libmali.so` needs `/dev/mali`+`/dev/ntkgpu`
 (proprietary drivers on the real SoC). But EGL/GLES is a portable API —

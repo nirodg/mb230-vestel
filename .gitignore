@@ -2,6 +2,7 @@
 *.zip
 *.bin
 *.scr
+!stage1/uboot/opentv_probe.scr
 *.img
 kylo_usb_update.*
 MD30010_*

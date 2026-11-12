@@ -49,6 +49,50 @@ loads DDRCFG → SECOS → U‑Boot → kernel.
 
 ---
 
+## USB U‑Boot script channel (CONFIRMED on hardware, 2026‑11‑12)
+
+U‑Boot (`U-Boot 2016.07-g54205a2 for nt72`, internal link base
+`0x2836200` recovered from the command/partition name pointers) runs a
+**plain‑text** `kylo_usb_update.scr` from the FAT32 stick **root** when
+the TV is powered on **holding `OK`** on the remote (banner
+`USB AUTO UPDATE!!`). The stock `.scr` is the full‑reflash burn recipe
+(`nand erase.chip` + per‑section `nand/sf write`); it is **destructive
+and irreversible** and overwrites XBOOT/U‑Boot/SECOS first.
+
+**Key finding — the script itself is NOT signature‑checked.** The loader
+(`nvtsource` = "run script from memory", `nvt_script_update` = "upgrade
+firmware according to auto script") sources the text directly; the only
+validation is the trailing `%` end marker ("incorrect script format!
+place %% at the end"). `sha256_chk` is a *separate* general command the
+script may call, not an automatic gate. A **custom** `.scr` therefore
+executes. This was verified: a non‑destructive probe (`mw` + `env export
+-t` + `fatwrite usb 0:auto`) wrote marker + env files back to the stick,
+FAT‑dated 1980‑01‑01 (U‑Boot has no RTC ⇒ written **pre‑Linux**).
+
+**But unsigned images still cannot boot.** The chain verifies at
+boot/read time — `nvt_calc_vhash`, `nvt_nand_update_vhash`, `bootsecure`,
+`nvt_sign`, env `verify=y`. So the channel is a **read‑only diagnostics /
+RE tool**, not a way to boot a custom OS: `fatwrite` + `nand read` /
+`sf read` can dump any partition to USB with **zero flash writes**.
+
+Live U‑Boot environment (via `env export`, the compiled‑in default):
+
+| var | value |
+|-----|-------|
+| `board` / `board_name` | `nt72671b_a32_n33006_nand` |
+| `soc` | `nt72671_a32` |  | `cpu` | `armv8` | `cpus` | `4` |
+| `bootcmd` | `reboot` (default — real boot uses the recovery cmdline in `xbootdat`; see `xdump/xsave rcvcmd`) |
+| `bootdelay` | `60` |  | `verify` | `y` (secure boot on) |
+| `baudrate` | `115200` (UART, if ever wired) |
+| `kernel_loadaddr` | `0x27FFFC0` |
+| `mtdparts` | matches the NAND table below |
+
+Repo tool: `stage1/uboot/opentv_probe.scr` (deploy as
+`kylo_usb_update.scr`) — a non‑destructive dump script (marker, env,
+`xbootdat`, `npt`, `misc`, SPI `0..0x20000`).
+
+---
+
 ## NAND partition layout (from update script)
 
 | Partition        | NAND offset      | Size       | Notes                          |
