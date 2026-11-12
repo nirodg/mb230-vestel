@@ -151,6 +151,21 @@ be taken — the open Stage‑1/2 problem to solve next (candidate levers,
 all still USB/reversible where possible: confirm the power‑cycle‑with‑
 stick timing, or the `/conf/remote.txt` gdbserver/CIFS dev path).
 
+**Live‑flash confirmation (2026‑11‑12, via the U‑Boot dump channel).**
+The kernel cmdline (`init=/init`, `root=/dev/ubiblock0_0` ro SquashFS,
+`rootflags=nvt_security`) sits in the **signed `fdt0`** — immutable
+without re‑signing, so there is no cmdline‑level entry. The one writable,
+reversible surface is **`/conf`** (apdat0, UBI/UBIFS): besides the TV
+profiles it holds **shell scripts the stock firmware executes on
+Wi‑Fi/P2P events** (`wifi/mtk_wifi_connectap_action.sh`,
+`wifi/p2papp_connected.sh`, `udhcpc-p2p.script`). `/conf` is writable via
+the service‑menu USB upload path (`RESEARCH.MD`) — **no reflash, no
+secure‑boot defeat**. That makes it the most promising Track‑B lever to
+reach our userland, and it generalises to the porting model: a new TV's
+port looks for its own writable config volume + firmware‑run hooks.
+(This unit currently has no `remote.txt` and an empty
+`disable_sh_command.txt`.)
+
 > For the CyanogenMod‑style porting model, mechanism **1** is a per‑device
 > **bring‑up/diagnostics** tool (dump this board's flash, env, panel/MAC
 > config non‑destructively); mechanism **2** is where the device

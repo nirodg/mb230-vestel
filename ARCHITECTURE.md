@@ -103,6 +103,25 @@ per‑investigation `nand read`/`sf read` → `fatwrite` dumps).
   material — device secrets, deliberately not reproduced here.**
 - `misc` first 4 KiB = `0x0e` filler (no useful content).
 
+**Round 2 (2026‑11‑12):**
+- `fdt0` `/chosen` holds the **live kernel cmdline**:
+  `console=ttyS0,115200 … rootflags=nvt_security vmalloc=504M maxcpus=4
+  ubi.mtd=12 ubi.block=0,0 root=/dev/ubiblock0_0 rootfstype=squashfs ro
+  quiet init=/init rootwait`. It is stored in the **signed `fdt0`**
+  partition ⇒ cannot be changed (e.g. `init=`) without re‑signing;
+  confirms the secure‑boot wall from live flash.
+- Full `xbootdat` (1.25 MiB) = panel config only; **no** saved recovery
+  cmdline on this unit (the `xsave rcvcmd` slot is empty here).
+- `apdat0` = **`/conf`**, a writable UBI/UBIFS volume (extracted with
+  `ubireader`, 60 files): the TV profiles (`mb230_hwprofile.bin`,
+  `mb230_swprofile.bin`, `ptf.ptf`, `PCF.pcf`, `PQF.bin`, `AQ.bin`),
+  config/XML, sqlite DBs, and **shell scripts the firmware executes on
+  Wi‑Fi/P2P events** (`wifi/mtk_wifi_connectap_action.sh`,
+  `wifi/p2papp_connected.sh`, `wifi/udhcpc-p2p.script`).
+  `disable_sh_command.txt` is empty; no `remote.txt`/`aurora`/`gdb`/`cifs`
+  present on this unit. Secrets in `/conf` (`mac.txt`, service‑menu
+  product code) are **not reproduced here**.
+
 ---
 
 ## NAND partition layout (from update script)
