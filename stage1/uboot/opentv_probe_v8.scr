@@ -1,0 +1,31 @@
+# OpenTV PROBE v8  --  read-only, no flash writes, no `ubi part` anywhere
+# (v7 lesson: raw `nand read` fails after `ubi part fs0`; v4 proved these
+# exact offsets work without UBI attached).
+#
+# Purpose — root-cause the ap0 factory-revert:
+#   1. /conf (apdat0 @ 0xE340000, 10 MiB): remote.txt still there?
+#      opentv_boot.log? any recovery/boot-count markers the TV wrote.
+#   2. xbootdat @ 0x2C0000 (1.25 MiB): boot flags/counters — diff against
+#      the round-1 dump to find what changed across failed boots.
+#   3. buffer partition head @ 0xED40000 (2 MiB): does it hold a factory
+#      ap0 backup? (look for squashfs 'hsqs' magic / ubi headers)
+
+echo OPENTV-PROBE v8: begin
+
+mw.l 0x3300000 0x4b4f564e
+fatwrite usb 0:auto 0x3300000 opentv_probe_ran.bin 4
+
+echo OPENTV-PROBE v8: xbootdat
+nand read 0x3300000 0x2c0000 0x140000
+fatwrite usb 0:auto 0x3300000 dump_xbootdat_v8.bin 0x140000
+
+echo OPENTV-PROBE v8: /conf
+nand read 0x3300000 0xe340000 0xa00000
+fatwrite usb 0:auto 0x3300000 dump_apdat0_v8.bin 0xa00000
+
+echo OPENTV-PROBE v8: buffer head
+nand read 0x3300000 0xed40000 0x200000
+fatwrite usb 0:auto 0x3300000 dump_buffer_head_v8.bin 0x200000
+
+echo OPENTV-PROBE v8: done
+% <- this is end of file symbol

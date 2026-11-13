@@ -235,6 +235,56 @@ plausible than an Android port.
 ---
 ---
 
+## Rounds 7–10 (2026-11-13): the ap0 revert + update machinery
+
+Facts carved from the firmware (MD30010 package + live dumps); live-TV
+observations via the U-Boot probe channel (`stage1/uboot/`).
+
+- The `fs0` mtd partition is one UBI with **4 volumes** (package image,
+  cross-checked against the live volume table): `ap0` (607 LEBs,
+  SquashFS app volume), `ap1` (109 LEBs, SquashFS **overlay**:
+  `dynamic_ui`, AudioDSP `firmware/`, `html_applications`,
+  `modules/ntkdriver_dovi.ko`, `oss` — no flasher), `fs0` (23 LEBs,
+  rootfs UBIFS), `nvt_sign` (1 LEB, high-entropy signature blob).
+  Boot mounts: `ap0`→`/vendor` (ro), `ap1`→`/vendor2` (ro, `rc.local`
+  line 83), `apdat0`→`/conf` (rw).
+- `startup.sh` runs `/oad/oadLoader` when present — but `/oad` ships
+  empty (rootfs and ap1 both), so that OTA path is dead on this unit.
+- The **software-update machinery lives in ap0**: `com.nvt.idtv/
+  aurora.elf` (28.7 MB app) strings include `oadWriteFlashAndReboot`,
+  `rootfs_burn.img`, `board_burn.img`, "Start the web search for
+  forced software update and burn flash if exists", `echo
+  nvt_trigger_update > /tmp/trigger_reboot`, `INCSWUPDATECOUNTERS
+  0-USB 1-HTTP 2-SIDE_LOAD_USB`, `/conf/fto.bin`, and `/buffer/
+  conf_backup/*` maintenance. `nvt_trigger_update` (ap0 root) is a
+  383 KB **static ARM ELF flasher tool** (BuildID `32a8f01f…`),
+  referenced only by aurora.elf. `/conf/fto.bin` +
+  `/conf/ftpUpdateVersionFile.txt` record the update state
+  (`V.0.51.19.0,V.0.51.52.5` after the documented Medion downgrade —
+  the TV sees a newer version available).
+- `/conf` maintenance: `mtdmount.sh mount_apdat()` reformats `apdat0`
+  only after 3 failed mounts and then restores `/buffer/conf_backup/*`.
+  The live `/conf` image_seq (`0x67025800`) equals the factory image's
+  ⇒ **never reformatted**. The `buffer` volume (1037 PEBs reserved)
+  is provably never written (EC-stamped, VID-erased head, no UBIFS
+  magic) — it is NOT an ap0 backup store on this unit.
+- **Observed live:** during the v2.1 loop session (10:45–11:40, nine
+  DHCP+mount cycles ~33 s apart, the stock app never running) the TV's
+  `ap0` volume returned to byte-identical factory content (probe v7
+  live prefix CRC `0x18def0da` == factory). xbootdat unchanged since
+  round 1 (no boot counters), buffer empty, rootfs 5.8 MB, ap1
+  unchanged ⇒ no local source holds 154 MB of factory ap0 bytes ⇒ the
+  only remaining writer is the TV's own update machinery downloading
+  over the internet. Note: `ap0` is byte-identical across SW versions
+  (app updates ride the `ap1` overlay), so an applied OTA would NOT
+  change the ap0 fingerprint — probe v9 fingerprints `ap1`/`nvt_sign`/
+  `fs0`/`ker1` against the package to detect any OTA write.
+- Mitigation shipped in payload v3.1: re-delete the default route
+  every 30 s (`route del default`; busybox has no `ip` applet) so the
+  OTA download path cannot run while telnet/LAN stay reachable, plus
+  a 30 s ap0/nvt_sign fingerprint trap that dumps process state to
+  `/conf/opentv_revert.log` on any change.
+
 # MD30010 Medion Firmware — Static Analysis
 
 > **Scope note.** Everything *above* this line describes the **original

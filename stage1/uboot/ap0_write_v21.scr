@@ -1,0 +1,45 @@
+# OpenTV ap0 WRITE script v2.1  --  *** ARMED: THIS WRITES TV FLASH ***
+#
+# Track-C v2.1: v2 image + hardened run_aurora.sh HTTP block.
+# v2 failure analysis (round 7): the TV ran v2 (8 SMB sessions to :445,
+# ZERO packets to :8123, no SYN ever sent) -> the `timeout`/`wget` calls
+# failed BEFORE networking = "command not found": appmgr's environment
+# has no /usr/bin in PATH (both applets live only there; every command
+# that worked is /bin or /sbin).
+# v2.1 changes: absolute paths (/usr/bin/wget, /usr/bin/timeout), a
+# `command -v` fallback, and a per-boot log at /conf/opentv_boot.log
+# (readable via the probe .scr) so we never diagnose blind again.
+#
+# Only the ap0 VOLUME DATA is written (dynamic volume; layout headers,
+# volume table, fs0/ap1 volumes and everything signed or boot-critical
+# untouched). Restore = ap0_restore.scr (factory image, same channel).
+#
+# Deploy ONLY as <FAT32 stick root>/kylo_usb_update.scr on explicit go,
+# with ap0_patched_v21.squashfs (154,017,792 B) in the stick root.
+# PC side: HTTP server on port 8123 serving aurora.elf (running) +
+# ufw allow 8123/tcp (user confirmed allowed).
+
+echo OPENTV-AP0WRITE21: begin (ARMED, ap0 <- patched v2.1)
+
+# 1) load the patched v2.1 image from the FAT stick into RAM
+fatload usb 0:auto 0x3300000 ap0_patched_v21.squashfs
+
+# 2) attach UBI on the fs0 mtd partition and update the ap0 volume
+ubi part fs0
+ubi write 0x3300000 ap0 0x92e2000
+
+# 3) verify: dirty RAM, read the whole volume back, CRC-compare
+mw.l 0x3300000 0x00000000 1
+ubi read 0x3300000 ap0 0x92e2000
+if crc32 0x3300000 0x92e2000 fb0f52b8; then
+    echo OPENTV-AP0WRITE21: VERIFIED (crc32 fb0f52b8)
+    mw.l 0x3300000 0x4b4f564e
+    fatwrite usb 0:auto 0x3300000 ap0_write_v21_ok.bin 4
+else
+    echo OPENTV-AP0WRITE21: *** CRC MISMATCH - RUN ap0_restore ***
+    mw.l 0x3300000 0x4641494c
+    fatwrite usb 0:auto 0x3300000 ap0_write_v21_FAIL.bin 4
+fi
+
+echo OPENTV-AP0WRITE21: done
+% <- this is end of file symbol

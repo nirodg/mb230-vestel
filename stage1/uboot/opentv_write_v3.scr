@@ -1,0 +1,61 @@
+# OpenTV v3 WRITE script  --  *** ARMED: WRITES TV FLASH (ap0 + conf) ***
+#
+# Round 9/10 plan, deploy ONLY as <FAT32 stick root>/kylo_usb_update.scr
+# on explicit user go. Until then it sits under an inactive name.
+#
+# Part 1: ap0 volume <- ap0_patched_v3.squashfs (154,017,792 B = 0x92e2000).
+#   ini program=/conf/opentv_payload; v3.1 run_aurora.sh (absolute-path
+#   wget + /conf/opentv_boot.log). Only the ap0 VOLUME DATA is written
+#   (dynamic volume; layout headers, volume table, fs0/ap1/nvt_sign and
+#   everything boot-critical untouched). Restore = ap0_restore.scr.
+# Part 2: conf volume <- conf_v3.ubifs (3,809,280 B = 0x3a2000):
+#   the CURRENT /conf (round-8 dump, image_seq 0x67025800 preserved) +
+#   /conf/opentv_payload (mode 755, v3.1: route-block + ap0/nvt_sign
+#   fingerprint trap + telnetd) ; remote.txt and fto.bin kept as-is.
+#   Conf volume never reformatted (image_seq matches factory), so this
+#   is a volume update, not a reformat.
+# Each part: ubi write -> dirty RAM -> ubi read back -> CRC-compare ->
+#   v3_<part>_ok.bin (NVOK) / v3_<part>_FAIL.bin (FAIL) marker on stick.
+# Failure of one part does not block the other; both markers tell us
+# exactly what happened. Post-write boot state: payload runs as root
+# via appmgr, telnet on :23, internet blocked (route del default),
+# ap0/nvt_sign fingerprinted every 30 s into /conf logs.
+
+echo OPENTV-V3WRITE: begin (ARMED, ap0 <- v3, conf <- v3)
+
+# ---------- part 1: ap0 ----------
+echo OPENTV-V3WRITE: part1 fatload ap0 image
+fatload usb 0:auto 0x3300000 ap0_patched_v3.squashfs
+ubi part fs0
+ubi write 0x3300000 ap0 0x92e2000
+mw.l 0x3300000 0x00000000 1
+ubi read 0x3300000 ap0 0x92e2000
+if crc32 0x3300000 0x92e2000 ddfb3864; then
+    echo OPENTV-V3WRITE: ap0 VERIFIED (crc32 ddfb3864)
+    mw.l 0x3300000 0x4b4f564e
+    fatwrite usb 0:auto 0x3300000 v3_ap0_ok.bin 4
+else
+    echo OPENTV-V3WRITE: *** ap0 CRC MISMATCH - RUN ap0_restore ***
+    mw.l 0x3300000 0x4641494c
+    fatwrite usb 0:auto 0x3300000 v3_ap0_FAIL.bin 4
+fi
+
+# ---------- part 2: conf ----------
+echo OPENTV-V3WRITE: part2 fatload conf image
+fatload usb 0:auto 0x3300000 conf_v3.ubifs
+ubi part apdat0
+ubi write 0x3300000 apdat0 0x3a2000
+mw.l 0x3300000 0x00000000 1
+ubi read 0x3300000 apdat0 0x3a2000
+if crc32 0x3300000 0x3a2000 96f6bd55; then
+    echo OPENTV-V3WRITE: conf VERIFIED (crc32 96f6bd55)
+    mw.l 0x3300000 0x4b4f564e
+    fatwrite usb 0:auto 0x3300000 v3_conf_ok.bin 4
+else
+    echo OPENTV-V3WRITE: *** conf CRC MISMATCH - conf keeps old content ***
+    mw.l 0x3300000 0x4641494c
+    fatwrite usb 0:auto 0x3300000 v3_conf_FAIL.bin 4
+fi
+
+echo OPENTV-V3WRITE: done
+% <- this is end of file symbol

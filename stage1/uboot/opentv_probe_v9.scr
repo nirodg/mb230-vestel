@@ -1,0 +1,124 @@
+# OpenTV PROBE v9  --  READ-ONLY: raw nand reads + ubi volume reads only.
+# No flash writes. fatwrite only dumps/markers to the USB stick.
+#
+# Purpose (round 9): fingerprint the LIVE TV flash against the Medion
+# package (MD30010) to answer "did the TV's own update machinery ever
+# write flash" (OTA applied?), and re-check ap0 after the v2.1 session.
+# ap0 alone cannot prove an OTA (Vestel ships app updates in the ap1
+# overlay, /vendor2), so ap1, nvt_sign, fs0(vol) and ker1 are compared
+# too. nvt_sign/ap1/ker1/fs0 differing from the package = something
+# wrote flash on its own; all matching = TV flash == package exactly.
+#
+# References (PC-side CRC32 over the Medion package / round-8 dumps):
+#   ker1 head 256KiB   78cf514c   (package ker1.uimg)
+#   ap0 prefix 256KiB  18def0da   (factory ap0; == probe v7 live result)
+#   nvt_sign vol full  29d846a8   (package, 253,952 B = 1 LEB)
+#   fs0 vol full       611b54a2   (package, 5,840,896 B = 23 LEBs)
+#   ap1 vol full       34d34070   (package, 27,680,768 B = 109 LEBs)
+#   conf 10MiB full    988a9672   (round-8 dump: "unchanged since v8")
+#   buffer head 2MiB   ed23b697   (round-8 dump: "unchanged since v8")
+# Markers (4-byte files): MTCH = crc match, DIFF = mismatch,
+# RDFL = ubi read failed, NVOK = step ran. Zeros in a dump = the read
+# failed (RAM was zero-filled first).
+# Order: raw reads FIRST, `ubi part fs0` only after (v7 lesson).
+
+echo OPENTV-PROBE9: begin
+
+mw.l 0x3300000 0x4b4f564e
+fatwrite usb 0:auto 0x3300000 opentv_probe9_ran.bin 4
+
+echo V9: ker1 head (raw @ 0x1440000)
+nand read 0x3300000 0x1440000 0x40000
+fatwrite usb 0:auto 0x3300000 dump_ker1_head_v9.bin 0x40000
+if crc32 0x3300000 0x40000 78cf514c; then
+    echo V9: ker1 == package
+    mw.l 0x3300000 0x4843544d
+else
+    echo V9: ker1 DIFFERS from package
+    mw.l 0x3300000 0x46464944
+fi
+fatwrite usb 0:auto 0x3300000 m9_ker1.bin 4
+
+echo V9: /conf (raw @ 0xe340000, 10MiB)
+nand read 0x3300000 0xe340000 0xa00000
+fatwrite usb 0:auto 0x3300000 dump_apdat0_v9.bin 0xa00000
+if crc32 0x3300000 0xa00000 988a9672; then
+    echo V9: conf unchanged since v8
+    mw.l 0x3300000 0x4843544d
+else
+    echo V9: conf CHANGED since v8
+    mw.l 0x3300000 0x46464944
+fi
+fatwrite usb 0:auto 0x3300000 m9_conf.bin 4
+
+echo V9: buffer head (raw @ 0xed40000, 16MiB)
+nand read 0x3300000 0xed40000 0x1000000
+fatwrite usb 0:auto 0x3300000 dump_buffer_v9.bin 0x1000000
+if crc32 0x3300000 0x200000 ed23b697; then
+    echo V9: buffer head unchanged since v8
+    mw.l 0x3300000 0x4843544d
+else
+    echo V9: buffer head CHANGED since v8
+    mw.l 0x3300000 0x46464944
+fi
+fatwrite usb 0:auto 0x3300000 m9_buff.bin 4
+
+echo V9: raw reads done, attaching fs0 UBI
+ubi part fs0
+
+echo V9: ap0 volume prefix
+mw.l 0x3300000 0x00000000 0x10000
+ubi read 0x3300000 ap0 0x40000
+fatwrite usb 0:auto 0x3300000 dump_ap0_prefix_v9.bin 0x40000
+if crc32 0x3300000 0x40000 18def0da; then
+    echo V9: ap0 == FACTORY package (as in v7)
+    mw.l 0x3300000 0x4843544d
+else
+    echo V9: ap0 DIFFERS from factory package
+    mw.l 0x3300000 0x46464944
+fi
+fatwrite usb 0:auto 0x3300000 m9_ap0.bin 4
+
+echo V9: nvt_sign volume (full)
+mw.l 0x3300000 0x00000000 0xf800
+ubi read 0x3300000 nvt_sign 0x3e000
+fatwrite usb 0:auto 0x3300000 dump_nvt_sign_v9.bin 0x3e000
+if crc32 0x3300000 0x3e000 29d846a8; then
+    echo V9: nvt_sign == package
+    mw.l 0x3300000 0x4843544d
+else
+    echo V9: nvt_sign DIFFERS from package
+    mw.l 0x3300000 0x46464944
+fi
+fatwrite usb 0:auto 0x3300000 m9_nsign.bin 4
+
+echo V9: fs0 rootfs volume (full)
+mw.l 0x3300000 0x00000000 0x164800
+ubi read 0x3300000 fs0 0x592000
+fatwrite usb 0:auto 0x3300000 dump_fs0_vol_v9.bin 0x592000
+if crc32 0x3300000 0x592000 611b54a2; then
+    echo V9: fs0 volume == package
+    mw.l 0x3300000 0x4843544d
+else
+    echo V9: fs0 volume DIFFERS from package
+    mw.l 0x3300000 0x46464944
+fi
+fatwrite usb 0:auto 0x3300000 m9_fs0.bin 4
+
+echo V9: ap1 overlay volume (full)
+mw.l 0x3300000 0x00000000 0x699800
+ubi read 0x3300000 ap1 0x1a66000
+fatwrite usb 0:auto 0x3300000 dump_ap1_vol_v9.bin 0x1a66000
+if crc32 0x3300000 0x1a66000 34d34070; then
+    echo V9: ap1 == package
+    mw.l 0x3300000 0x4843544d
+else
+    echo V9: ap1 DIFFERS from package
+    mw.l 0x3300000 0x46464944
+fi
+fatwrite usb 0:auto 0x3300000 m9_ap1.bin 4
+
+echo OPENTV-PROBE9: done
+mw.l 0x3300000 0x4b4f564e
+fatwrite usb 0:auto 0x3300000 opentv_probe9_done.bin 4
+% <- this is end of file symbol

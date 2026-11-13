@@ -55,6 +55,18 @@ stick:
 	@echo "board/ ready. Copy it to the stick:"
 	@echo "  cp -r $(BOARD) $(STICK)/"
 
+# opentv_payload — v3.1 payload. No host armhf toolchain needed:
+#   docker run --rm --network host -v "$PWD":/w -w /w ubuntu:16.04 \
+#     sh -c 'apt-get update -qq && apt-get install -y -qq \
+#            gcc-arm-linux-gnueabihf >/dev/null && \
+#            arm-linux-gnueabihf-gcc -O2 -marm -mfloat-abi=hard -static \
+#            opentv_payload.c -o opentv_payload && \
+#            arm-linux-gnueabihf-strip opentv_payload'
+payload: opentv_payload.c
+	$(CC) $(ARMFLAGS) -static $< -o opentv_payload
+	$(CROSS_COMPILE)strip opentv_payload 2>/dev/null || true
+	@file opentv_payload | grep -q ARM && echo "[ok] opentv_payload (ARM static)" || echo "[!] check arch"
+
 clean:
 	rm -f opentv_fbshow opentv_launcher
 

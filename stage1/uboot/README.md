@@ -111,6 +111,74 @@ verify, marker `ap0_write_v2_ok.bin`). Port 8123 chosen because 8000
 is occupied on the PC. Stick state: `kylo_usb_update.scr` = read-only
 probe (safe default), v2 script parked under its own name.
 
+**v2.1 (EXECUTED 2026-11-13):** absolute paths (`/usr/bin/wget`,
+`/usr/bin/timeout`) + a `/conf/opentv_boot.log` per-boot log; armed as
+`ap0_write_v21.scr`, marker `ap0_write_v21_ok.bin` = `NVOK` (write +
+CRC read-back verified live). Result (rounds 7–8): the TV still never
+reached :8123 (pcaps + HTTP log agree — only internet scanners hit
+the PC); the script looped ~33 s per cycle (DHCP + SMB per cycle,
+`opentv_boot.log` created 0 B) — and **ap0 came back FACTORY**:
+
+**Probe v7 (lesson + fingerprint):** raw `nand read` FAILS after
+`ubi part fs0` — do raw reads first, attach after. Live ap0
+prefix-256KiB CRC `0x18def0da` == factory ⇒ the v1 ap0 write was
+reverted to byte-identical factory content.
+
+**Probe v8 (read-only):** `xbootdat` byte-identical to round 1
+(0 bytes differ ⇒ no boot counters changed); `buffer` head 2 MiB =
+formatted, never written (EC-stamped PEBs, VID erased, no UBIFS/
+hsqs/conf_backup strings); fresh `/conf` differs from round 4 only
+by `opentv_boot.log` (0 B — proof the v2.1 script ran); `/conf`
+image_seq `0x67025800` == the factory `apdat0` image_seq ⇒ **`/conf`
+was never reformatted** (mount_apdat's recovery path never fired).
+
+**Round 9 (PC-side, no TV cycle):** the full `fs0` partition image
+from the Medion package parses into 4 volumes: `ap0` 607 LEBs,
+`ap1` 109 LEBs (squashfs overlay: dynamic_ui / AudioDSP firmware /
+html_applications / ntkdriver_dovi.ko / oss — no flasher), `fs0`
+23 LEBs (rootfs; the earlier carve was already complete), `nvt_sign`
+1 LEB. Boot map: ap0→`/vendor`, ap1→`/vendor2` (ro), apdat0→`/conf`
+(rw); `startup.sh` runs `/oad/oadLoader`, but `/oad` ships empty
+(dead path on this unit). The update machinery lives in ap0:
+`aurora.elf` strings (`oadWriteFlashAndReboot`, `rootfs_burn.img`,
+`board_burn.img`, "web search for forced software update and burn
+flash", `INCSWUPDATECOUNTERS`, `/conf/fto.bin`) + `nvt_trigger_update`
+= a 383 KB static ARM ELF flasher tool referenced only by aurora.elf.
+Revert-source candidates eliminated: xbootdat, buffer, fs0 rootfs,
+ap1, oadLoader, mount_apdat reformat, ENOSPC. Remaining source: the
+TV's own update machinery downloading from the internet (app last ran
+Nov 12 22:29; `ftpUpdateVersionFile.txt` = `V.0.51.19.0,V.0.51.52.5`
+— the documented Medion downgrade makes the TV see a newer version).
+`ap0` is byte-identical across SW versions (app updates ride the
+`ap1` overlay), so an ap0 fingerprint alone cannot detect an applied
+OTA — hence probe v9 compares ap1/nvt_sign/fs0/ker1 too.
+
+**Probe v9 (staged 2026-11-13, read-only, awaiting run):** raw reads
+first (ker1 head @`0x1440000` 256 KiB, `/conf` 10 MiB, `buffer`
+16 MiB), then `ubi part fs0` + per-volume reads (`ap0` prefix,
+`nvt_sign`, `fs0`, `ap1` full) with `if crc32` MATCH/DIFF markers vs
+package values: ker1 `78cf514c`, ap0 `18def0da`, nvt_sign `29d846a8`,
+fs0 `611b54a2`, ap1 `34d34070`; conf-unchanged `988a9672`,
+buffer-head-unchanged `ed23b697`. RAM is zero-filled before each
+`ubi read`, so a failed read shows as DIFF + an all-zero dump.
+Markers `m9_*.bin` (`MTCH`/`DIFF`), `opentv_probe9_ran/done.bin`.
+
+**v3 write (BUILT & STAGED 2026-11-13, awaiting explicit go):**
+`opentv_write_v3.scr` writes BOTH volumes in one boot, each with a
+read-back CRC: ap0 ← `ap0_patched_v3.squashfs` (154,017,792 B
+`0x92e2000`, crc `0xddfb3864`; debug-ini `program=/conf/opentv_payload`)
+and conf ← `conf_v3.ubifs` (3,809,280 B `0x3a2000`, crc `0x96f6bd55`
+= live round-8 `/conf` + `/conf/opentv_payload` mode 755; remote.txt
+and fto.bin kept). Markers `v3_ap0_ok/FAIL.bin`, `v3_conf_ok/FAIL.bin`.
+Payload v3.1 (stage1/launcher/opentv_payload.c, static ARM): telnetd
+root shell on :23, `route del default` internet block re-asserted
+every 30 s (run_aurora.sh's udhcpc renewals re-add the route; busybox
+has no `ip` applet), ap0/nvt_sign fingerprint trap (baseline at boot,
+re-check every 30 s, on ANY change dumps ps + /proc cmdlines to
+`/conf/opentv_revert.log`), logs to `/conf/opentv_payload.log`.
+Deployed ONLY as `kylo_usb_update.scr` on explicit go; parked on the
+stick as `kylo_usb_update_WRITE-AP0CONF-v3_ARMED.scr`.
+
 Facts (probe v5 + MD30010 carve, all verified):
 - `fs0` mtd @ **`0x2040000`**, 195 MiB (780 PEBs); standard mainline
   UBI; live volume table: `fs0`=23 PEBs, **`ap0`=607 PEBs dynamic**,

@@ -1,0 +1,57 @@
+# OpenTV PROBE v7  --  read-only, no flash writes
+#
+# Answers, in one boot:
+#  1. WHICH ap0 variant is actually running on the TV. The ap0 volume
+#     prefix (256 KiB) is CRC'd against the four candidate images
+#     (prefix CRCs computed on the PC from the exact built files):
+#       factory    18def0da
+#       v1         cf7b2a91   (insmod ntkethmac fix)
+#       v2         310a8b62   (v1 + wget block, bare names)
+#       v2.1       34e34d7e   (v1 + wget block, absolute paths + /conf log)
+#  2. The full /conf (= apdat0 @ 0xE340000, 10 MiB) is dumped, which
+#     should contain /conf/opentv_boot.log written by v2.1's
+#     run_aurora.sh diagnostics block (if v2.1 is what ran).
+
+echo OPENTV-PROBE v7: begin
+
+mw.l 0x3300000 0x4b4f564e
+fatwrite usb 0:auto 0x3300000 opentv_probe_ran.bin 4
+
+echo OPENTV-PROBE v7: fingerprint ap0
+ubi part fs0
+ubi read 0x3300000 ap0 0x40000
+
+if crc32 0x3300000 0x40000 18def0da; then
+    echo OPENTV-PROBE v7: ap0 = FACTORY
+    mw.l 0x3300000 0x54434146
+    fatwrite usb 0:auto 0x3300000 probe_ap0_factory.bin 4
+else
+    if crc32 0x3300000 0x40000 cf7b2a91; then
+        echo OPENTV-PROBE v7: ap0 = PATCHED v1
+        mw.l 0x3300000 0x31563156
+        fatwrite usb 0:auto 0x3300000 probe_ap0_v1.bin 4
+    else
+        if crc32 0x3300000 0x40000 310a8b62; then
+            echo OPENTV-PROBE v7: ap0 = PATCHED v2
+            mw.l 0x3300000 0x32563256
+            fatwrite usb 0:auto 0x3300000 probe_ap0_v2.bin 4
+        else
+            if crc32 0x3300000 0x40000 34e34d7e; then
+                echo OPENTV-PROBE v7: ap0 = PATCHED v2.1
+                mw.l 0x3300000 0x31325632
+                fatwrite usb 0:auto 0x3300000 probe_ap0_v21.bin 4
+            else
+                echo OPENTV-PROBE v7: ap0 = UNKNOWN VARIANT
+                mw.l 0x3300000 0x4b4e5558
+                fatwrite usb 0:auto 0x3300000 probe_ap0_UNKNOWN.bin 4
+            fi
+        fi
+    fi
+fi
+
+echo OPENTV-PROBE v7: dump /conf
+nand read 0x3300000 0xe340000 0xa00000
+fatwrite usb 0:auto 0x3300000 dump_apdat0_v7.bin 0xa00000
+
+echo OPENTV-PROBE v7: done
+% <- this is end of file symbol

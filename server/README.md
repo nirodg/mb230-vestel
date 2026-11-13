@@ -51,6 +51,31 @@ fi
 - Build/write: `stage1/uboot/ap0_write_v2.scr` +
   `ap0_patched_v2.squashfs` (154,017,792 B, crc32 `0x11a83e1b`).
 
+## Round 7–10 pivot (2026-11-13): v3 payload via appmgr `program=`
+The v2.1 HTTP rig never got a hit on :8123 (pcaps + HTTP log agree),
+and **during that session the TV reverted ap0 to factory bytes on its
+own** (probe v7: live ap0 prefix CRC `0x18def0da` = factory). All
+local revert sources are eliminated (xbootdat unchanged, buffer
+volume provably empty, fs0 rootfs 5.8 MB, ap1 assets-only,
+oadLoader absent, /conf never reformatted); the one remaining source
+with 154 MB of factory-identical bytes is the TV's own update
+machinery downloading from the internet (aurora.elf:
+`oadWriteFlashAndReboot`, `rootfs_burn.img`, "web search for forced
+software update and burn flash"; the app last ran Nov 12 22:29 and
+`ftpUpdateVersionFile.txt` shows `V.0.51.52.5` available vs the
+downgraded `V.0.51.19.0`).
+
+⇒ **v3 (built & staged, awaiting go)**: patch the debug-ini
+`program=` to `/conf/opentv_payload` (ap0 v3 image) and ship the
+payload binary in `/conf` (fast conf-only iterations). Payload v3.1
+starts telnetd (root shell :23), **deletes the default route every
+30 s** (kills the OTA download path; LAN/telnet unaffected — busybox
+has `route`, no `ip`), and fingerprints the ap0 + nvt_sign UBI
+volumes every 30 s — on any change it dumps `ps` + `/proc` cmdlines
+to `/conf/opentv_revert.log` so the reverter is caught red-handed.
+The CIFS/HTTP rig below is kept for reference but is NOT the active
+plan anymore.
+
 ## Environment notes (current rig)
 - **PC is on WiFi** (`wlp5s0`), currently 192.168.0.100 — the same IP
   `remote.txt` points at by coincidence. Make it permanent with a
