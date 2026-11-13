@@ -163,6 +163,44 @@ buffer-head-unchanged `ed23b697`. RAM is zero-filled before each
 `ubi read`, so a failed read shows as DIFF + an all-zero dump.
 Markers `m9_*.bin` (`MTCH`/`DIFF`), `opentv_probe9_ran/done.bin`.
 
+**Probe v9 (RAN 2026-11-13, partial — stop cause identified):** ran one
+step (`opentv_probe9_ran.bin` = NVOK, `dump_ker1_head_v9.bin` captured)
+and died at its FIRST `if crc32` line; all later markers/dumps missing
+— far too early for a session-length cause (v21 moved ~460 MB fine).
+Cause: v9's ker1 reference `78cf514c` was wrong-basis (package prefix
+without the 64-byte uImage header; the real head crc is `f3f551c7`),
+so the condition evaluated FALSE — and every `if crc32` that ever ran
+on this U-Boot before (v1/v2/v21) evaluated TRUE and completed.
+Hypothesis: a FALSE if-condition aborts the whole script (the else
+path was never exercised). Regardless of mechanism: **probes must
+contain zero `if` lines; all comparisons happen PC-side.**
+
+**ker1 decoded (PC-side, round 9):** the TV's ker1 partition head is a
+valid uImage header (`27 05 19 56`, hcrc ok, size `0x84bdf0` = exactly
+the package `ker1.uimg` size, load=ep `0x02808000`, comp=1 gzip,
+"Linux-4.9.118+", ts 1561516863) followed AT `0x40` by the package's
+gzip payload **byte-identical** (dump has exactly one gzip magic, at
+0x40, and `tv[0x40:] == pkg[:0x3ffc0]` exactly; dcrc field
+`0x8b4154b7` == crc32(package)). The earlier "payload mismatch" was a
+comparison artifact (position-wise compare ignoring the 64-byte
+header shift + length-clamped slice). ⇒ ker1 == package, **no revert
+evidence in ker1**. v9b ker1-head reference = `f3f551c7` (as-is dump).
+
+**Probe v9b (staged 2026-11-13, read-only, awaiting run):** v9's plan
+minus every `if` — pure dumps, PC-side comparison. Order: ker1 head
+`0x1440000` 256 KiB, buffer head `0xed40000` 2 MiB, /conf `0xe340000`
+10 MiB (raw), then `ubi part fs0` + ap0 prefix 256 KiB, nvt_sign full
+`0x3e000`, fs0 full `0x592000`, ap1 full `0x1a66000`. RAM zero-filled
+before every read (all-zero tail = failed/short read, not stale RAM).
+No per-step markers: the dump files themselves are the progress
+record; `opentv_probe9b_ran/done.bin` bracket the run. Expected CRCs:
+ker1 `f3f551c7` (= v9 dump), buffer head `ed23b697` (= v8), conf
+`988a9672` (= v8, + PC byte-diff), ap0 `18def0da` (= factory/v7),
+nvt_sign `29d846a8`, fs0 `611b54a2`, ap1 `34d34070` (= package).
+Interpretation: any DIFF on nvt_sign/fs0/ap1 = something wrote flash
+on its own (interpret content: UBIFS journal churn = rw usage; new
+assets = OTA); all MTCH = no self-writes in any dumped region.
+
 **v3 write (BUILT & STAGED 2026-11-13, awaiting explicit go):**
 `opentv_write_v3.scr` writes BOTH volumes in one boot, each with a
 read-back CRC: ap0 ← `ap0_patched_v3.squashfs` (154,017,792 B

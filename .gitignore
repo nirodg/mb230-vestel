@@ -12,6 +12,7 @@
 !stage1/uboot/opentv_probe_v7b.scr
 !stage1/uboot/opentv_probe_v8.scr
 !stage1/uboot/opentv_probe_v9.scr
+!stage1/uboot/opentv_probe_v9b.scr
 !stage1/uboot/opentv_write_v3.scr
 *.img
 kylo_usb_update.*
