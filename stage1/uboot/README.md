@@ -201,6 +201,32 @@ Interpretation: any DIFF on nvt_sign/fs0/ap1 = something wrote flash
 on its own (interpret content: UBIFS journal churn = rw usage; new
 assets = OTA); all MTCH = no self-writes in any dumped region.
 
+**Probe v9b (RAN 2026-11-13, complete — all 7 dumps + done marker):**
+the pure-dump channel works end-to-end; no `if` anywhere. Results:
+`nvt_sign`, `fs0(vol)`, `ap1(vol)`, `ker1` head, `buffer` head all ==
+package/v8-era exactly; /conf files byte-identical to v8 (the 733 KB
+raw dump delta is UBIFS journal/index churn from rw remounts; file
+trees diff clean, opentv_boot.log still 0 B, remote.txt/fto.bin
+untouched). **LIVE ap0 == the v2.1 patched image** (prefix crc
+`34e34d7e` exact, superblock mkfs_time/bytes_used identical) — 4 h
+and many boot cycles after the v21 write. **No TV self-write
+detected anywhere; no OTA applied.** The TV's current boot loop is
+v2.1's own run_aurora.sh (HTTP fetch to unreachable :8123 → CIFS
+fallback → appmgr relaunch).
+
+**v7-fingerprint anomaly resolved as ghost (round 11):** v7 read ap0
+= factory (`probe_ap0_factory.bin` = "FACT") *after* the v21 write
+was verified — yet v9b sees v2.1 now, with no writer in between and
+no possible 154 MB restore source (largest scratch: 23.25 MiB buffer,
+empty; fs0 free ≈ 10 MiB; no network). A real flash rewrite to
+factory is physically impossible. Working theory: after each
+`ubi write` ap0 update the previous generation's PEBs stay
+unmapped-but-not-erased; an attach resolving duplicate (vol_id,lnum)
+claims returns old content on some boots (v7) and new on others
+(v9b), aging out as WL erases old PEBs. No flash write involved.
+Untested mechanism; v3.1's ap0/nvt_sign fingerprint trap will catch
+any real reverter live if one exists.
+
 **v3 write (BUILT & STAGED 2026-11-13, awaiting explicit go):**
 `opentv_write_v3.scr` writes BOTH volumes in one boot, each with a
 read-back CRC: ap0 ← `ap0_patched_v3.squashfs` (154,017,792 B
