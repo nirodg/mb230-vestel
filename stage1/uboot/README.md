@@ -227,6 +227,18 @@ claims returns old content on some boots (v7) and new on others
 Untested mechanism; v3.1's ap0/nvt_sign fingerprint trap will catch
 any real reverter live if one exists.
 
+**v3 write (RAN 2026-11-13):** part 1 verified live (`v3_ap0_ok.bin` =
+NVOK — ap0 ← v3, full 154 MB read-back CRC ok). The session stopped
+before part 2 (no conf marker either way): either the apdat0 attach
+after a 154 MB fs0 attach+verify failed, or the session simply ended
+post-verify. TV state after: quiet, off-network — ap0 v3's ini
+program= points at /conf/opentv_payload which the OLD conf lacks;
+execvp fails and nothing runs (benign, predicted). Fix: conf-only
+write (`opentv_write_conf_v3.scr`) in a FRESH session, using the
+round-3/4 proven flow (apdat0 as the first and only attach; began
+marker + fatload conf_v3.ubifs + ubi write 0x3a2000 + read-back crc
+96f6bd55 + v3_conf_ok.bin). Staged as kylo_usb_update.scr.
+
 **v3 write (BUILT & STAGED 2026-11-13, awaiting explicit go):**
 `opentv_write_v3.scr` writes BOTH volumes in one boot, each with a
 read-back CRC: ap0 ← `ap0_patched_v3.squashfs` (154,017,792 B
