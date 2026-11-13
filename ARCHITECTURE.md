@@ -378,6 +378,157 @@ linked:
 | `com.nvt.privserver` | privileged helper |
 | `com.nvt.xpca` | Novatek XPCA |
 
+## Wired network bring‑up (carved from fs0/ap0/fdt0, 2026‑11‑13)
+
+Evidence trail for how this firmware gets an IP — cited from the MD30010
+image (`fs0`/`ap0` SquashFS volumes and `fdt0`, carved 2026‑11‑13):
+
+- **DTS `fdt0`:** `ethernet@fd160000` — `compatible = "nvt,synopsys-mac"`
+  (Synopsys DesignWare MAC), no PHY/MDIO node; the MAC driver ships as
+  the module `ap0/modules/ntkethmac.ko`.
+- **`fs0/etc/rc.local` (`setup_network`):** starts `ifplugd -i eth0
+  -t 1 -d 0`. On link change, `fs0/etc/ifplugd/ifplugd.action` writes
+  `1`/`0` into the FIFO `/tmp/nvtpipe/linkstat`.
+- **`ap0/run.sh` → `gstreamer.sh` → `script_network.sh &`**
+  (backgrounded): `insmod /vendor/modules/ntkethmac.ko`, `ifconfig lo
+  up`, and copies the WiFi/P2P helper scripts into `$WIFI_CONF_DIR`
+  (`/mtd_apdat/wifi` — MTK `mt7662u_sta.ko`).
+- **`com.nvt.idtv/aurora.elf`** consumes the `linkstat` FIFO and runs
+  DHCP itself: `udhcpc -q --release -T 2 -n -t 2 -A 0 -i %s -h "%s-TV"`
+  — **2 tries × 2 s timeout, then it gives up** (no infinite retry in
+  the normal path). It sets the MAC (`ifconfig eth0 down hw ether %s`,
+  defaults seen in strings: `00:09:df:88:34:26`), skips eth0 when WiFi
+  is already connected, and kills stale clients first
+  (`killall -9 udhcpc`, `pkill -9 -f 'udhcpc -i %s'`).
+- **Contrast:** the debug path `ap0/run_aurora.sh` (armed via
+  `/conf/remote.txt`) runs a **plain `udhcpc -s /etc/udhcpc/default.script
+  eth0`** — no `-n`/`-t`/`-T` ⇒ **blocks forever without a lease** —
+  after forcing the default MAC `D4:E2:CC:EC:45:E9`. A lease failure
+  therefore wedges the idtv program ⇒ stock watchdog reboots ⇒ the
+  observed black‑screen reboot loop; the stock (aurora) path cannot
+  wedge this way because its `udhcpc` gives up after ~4 s.
+
+**Round 4 (2026‑11‑13, live dumps) — root cause of the remote.txt
+black‑screen loop.** Probe v4 read SPI `0..0x40000` (adds the MAC/config
+block at SPI `0x23000`, which holds the eth0 MAC as ASCII — matches
+`/conf/mac.txt`; value deliberately not reproduced) and the full 10 MiB
+`apdat0` (all 40 PEBs; NPT confirms `0xE340000`, 10 MiB). Findings:
+
+- **The Track‑B `conf` write succeeded and is live.** The live `apdat0`
+  UBI has since been organically rewritten by the TV itself (EC
+  counters 1–13, layout copies at PEB30/PEB10 — ordinary wear‑leveled
+  placement, standard UBI) — proof the TV booted Linux with our image
+  and its UBI garbage‑collected it. `remote.txt` survived with our
+  content.
+- **Our payload never ran:** no `/conf/opentv_aurora.log` in the live
+  FS, and smbd on the PC never saw a connection from the TV.
+- **Root cause (static, confirmed by absence of any TV frame on the
+  wire in two captures):** in the debug path appmgr launches
+  `run_aurora.sh` instead of the stock app, and **`ntkethmac.ko` is only
+  ever `insmod`ed by `script_network.sh`, whose only caller is the stock
+  `aurora.elf`** (string `./script_network.sh` inside the binary).
+  `run.sh` itself never calls `script_network.sh` — `gstreamer.sh`
+  (its only shell reference) is in turn referenced by no script or ini.
+  So in the remote.txt path `eth0` does not exist: `ifconfig` ×3 fail,
+  `udhcpc` exits immediately, `mount.cifs` fails, `$REMOTELF/aurora.elf`
+  is missing, the script exits, the FG app is gone ⇒ reset ⇒ loop.
+- **No alternative `/conf` exec hook exists in this firmware:**
+  `/conf/run_with_dwelf` is dead (`data/nvt.app.dwelf.ini` is absent
+  from the read‑only volume), `run_nfs.sh` is absent so the `telnetd`
+  block never runs, and `/conf/standalone_browser.bin` only toggles
+  `RUN_BROWSER_STANDALONE` env exports (no app in any ini points at a
+  `/conf` binary). Any fix that makes the remote.txt path work must
+  therefore get `ntkethmac.ko` loaded — i.e. patch `ap0` (Track‑C).
+
+**Track‑C target volume (carved from MD30010 + live fs0 vtbl,
+2026‑11‑13).** `fs0` (mtd, **`0x2040000`**, 195 MiB = 780 PEBs — per
+both the live `mtdparts` arithmetic *and* the stock update script's
+`nand write.trimffs 0x4580020 0x2040000 0xb980000`; note the earlier
+`0x1FC0000` figure in round‑5 notes was 2 PEBs early — ker1's tail;
+the probe's header-scan made the parse position‑independent) is one
+UBI stream. **Live volume table** (probe v5, layout at fs0 PEB0/1,
+standard 172‑byte records, CRCs valid):
+
+| volume | rsvd_pebs | type | capacity (LEB 253,952) |
+|---|---|---|---|
+| `fs0` | 23 | dynamic | ~5.8 MB |
+| `ap0` | 607 | **dynamic** | 154,148,864 B |
+| `ap1` | 111 | dynamic | ~28 MB |
+
+(`nvt_sign` exists in the update image but is **not** in the live
+table — 3 volumes only.) The headers are **standard mainline UBI**
+(multi‑byte EC/VID fields are big‑endian *per spec*; the earlier
+"vendor BE variant / scattered layout" reading was a misparse —
+round‑3's `ubireader` failure was only the truncated 15‑PEB window
+missing the second layout copy, and "scattered" placement is ordinary
+wear‑leveling). The `ap0` volume contains a **raw SquashFS 4.0 image**
+(zlib, 256 KiB blocks, all‑root, 154,015,107 bytes + 0xff padding to
+the full 607‑LEB capacity, build stamp `Jul 7 2020`).
+
+**Go condition met:** `ap0` is dynamic with 607 LEBs; the patched
+rebuild is 154,017,792 B (`0x92E2000`, crc32 `0xBAB70164`) = exactly
+607 LEBs — fits. Written back with the proven Track‑B channel
+(`fatload` → `ubi part fs0` → `ubi write … ap0`). Patch: one added
+`insmod /vendor/modules/ntkethmac.ko` in `run_aurora.sh` before the
+`ifconfig eth0` block; see `stage1/uboot/README.md` for state.
+
+**Round 6 (2026‑11‑13 ~03:50) — Track‑C EXECUTED and verified; new
+failure point found (SMB auth needs kernel crypto the TV lacks).**
+
+- **The ap0 write succeeded on hardware:** marker `ap0_write_ok.bin`
+  = `NVOK`; the script read the whole 607‑LEB volume back and the
+  CRC32 matched `0xBAB70164`. `stage1/uboot/ap0_write.scr` /
+  `ap0_restore.scr` are the reusable write/restore scripts.
+- **The driver patch works.** First normal boot after the patch
+  (capture `/tmp/opencode/tv_boot5.pcap`, PC on WiFi = 192.168.0.100):
+  the forced MAC **`D4:E2:CC:EC:45:E9` appeared on the wire** — eth0
+  now exists in the remote.txt path. DHCP lease obtained
+  (192.168.0.136), ARP for 192.168.0.100 answered by the PC, and a
+  **TCP session to the PC's :445 was established**.
+- **SMB got further than ever and died mid‑auth:** smbd negotiated
+  SMB1 ("Selected protocol NT LM 0.12"), SPNEGO session setup started,
+  client identified itself as `NativeOS=[Linux version 4.9.118+]
+  NativeLanMan=[CIFS VFS Client for Linux]`, received the NTLMSSP
+  challenge (neg flags `0xe0080225`) — and then the TV **closed the
+  connection (FIN ~0.5 s after SYN) without ever sending NTLMSSP
+  AUTHENTICATE** (smbd: "Server Exit (failed to receive smb
+  request)"). The watchdog loop persists (logo → black → off → ~30 s
+  cycle) because `mount` fails → `run_aurora.sh` exits → FG app gone.
+- **Root cause #2 (client‑side kernel crypto missing):** the TV's
+  `cifs.ko` (v2.09, vermagic `4.9.118+ SMP preempt mod_unload ARMv7`,
+  no module deps) requests `hmac(md5)`, `ecb(arc4)`, `arc4`, `md5`,
+  `des` from the kernel crypto API (module strings: "could not
+  allocate crypto hmacmd5" …). The **boot kernel `ker1` has none of
+  them built in** — extracted from the update image (uImage hdr
+  `@0xA20020`, name `Linux-4.9.118+`, gzip payload `@0xA20060`,
+  14,354,072 B decompressed; no `IKCFG_ST` embedded config):
+  `hmac` = 0 hits, `arc4` = 0, `ecb(arc4)` = 0, standalone `md4`/`des`
+  = 0 — only `md5`/`aes`/`sha1`/`sha256` are registered. **No crypto
+  modules ship anywhere** (`ap0/modules` = net/usb/bt/nfs/mali only,
+  `ap1` contains zero `.ko` files, `fs0/lib/modules` = ntk‑* display/
+  tuner/kteeclient only). NTLMv2 needs `hmac(md5)`; NTLMv1 needs
+  `md4`+`des` — neither can ever load, so session setup aborts
+  exactly at the challenge. (The recovery kernel `ker0` is equally
+  bare.)
+- **A server‑side dodge is impossible:** every Samba auth flavor
+  requires client-side crypto (plaintext passwords were removed from
+  Samba long ago).
+- **Fix path (ap0 patch v2, built 2026‑11‑13):** replace the CIFS mount
+  + exec in `run_aurora.sh` with a plain‑HTTP fetch — **busybox `wget`
+  and `timeout` are confirmed present** in the TV's rootfs
+  (`fs0/usr/bin/wget` → busybox): `/conf/aurora.elf` local exec if
+  present, else `timeout 20 wget -O /conf/remotelf/aurora.elf
+  http://$ip_addr:8123/aurora.elf` → exec — plain HTTP needs no kernel
+  crypto. PC side: `python3 -m http.server 8123 -d /srv/mb230cifs`
+  (running; port 8000 was already occupied on the PC) + ufw allow.
+  v2 image: 154,017,792 B, crc32 `0x11A83E1B`.
+- Environment notes: the experiment now runs with the **PC on WiFi**
+  (`wlp5s0` = 192.168.0.100 — coincidentally the same IP `remote.txt`
+  points at; a router DHCP reservation for the PC's WiFi MAC is
+  recommended so it stays `.100`); ufw is active but :445 was confirmed
+  reachable; the TV itself must stay on **ethernet** (the remote.txt
+  path is eth0‑only).
+
 ## Security‑relevant findings
 
 ### 1. Built‑in gdbserver / CIFS remote‑run backdoor

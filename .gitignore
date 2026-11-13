@@ -3,6 +3,9 @@
 *.bin
 *.scr
 !stage1/uboot/opentv_probe.scr
+!stage1/uboot/ap0_write.scr
+!stage1/uboot/ap0_restore.scr
+!stage1/uboot/ap0_write_v2.scr
 *.img
 kylo_usb_update.*
 MD30010_*

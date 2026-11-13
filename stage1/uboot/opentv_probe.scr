@@ -8,36 +8,32 @@
 # dump_*.bin / *.txt files on a PC. If the format is bad U-Boot aborts
 # with no effect. CONFIRMED to execute on hardware 2026-11-12.
 #
-# The dump targets below evolve per investigation. Round 1 (done) took
-# xbootdat[0:8K]/npt/misc/spi. Round 2 (this file) chases the real boot
-# cmdline (full xbootdat), the device tree (fdt0), and the WRITABLE
-# /conf partition (apdat0 = where remote.txt / USB-download state live).
+# Round 1 (done): xbootdat[0:8K]/npt/misc/spi[0:0x20000].
+# Round 2 (done): full xbootdat, fdt0, apdat0[0:0xa00000].
+# Round 3 (done): SPI[0:0x20000], full xbootdat, fdt0, apdat0[0:0x3c0000]
+#   (3.75 MiB prefix only — LEBs are SCATTERED in this vendor UBI, the
+#   window missed the layout lnum=0 PEB and the master/data LEBs).
+# Round 4 (done): SPI FULL 0..0x40000 (MAC @0x23000 read OK) + apdat0
+#   FULL 0xa00000. Result: conf write was LIVE and healthy; root cause
+#   of the loop = ntkethmac.ko never loaded in the remote.txt path.
+# Round 5 (this file): fs0 head PEB0-7 @0x1fc0000 (volume table of the
+#   fs0 UBI: ap0 vol_type + rsvd_pebs - required to plan the Track-C
+#   ap0 squashfs patch). fs0 offset 0x1fc0000 anchor-checked against
+#   fdt0 @0xac0000 and apdat0 @0xe340000 from the live mtdparts.
 #
 # RAM scratch 0x3300000 = DRAM load area the stock update script uses.
 # NAND offsets are raw mtd0 offsets from the live `mtdparts` env.
 
-echo OPENTV-PROBE v2: begin
+echo OPENTV-PROBE v5: begin
 
 # 0) marker: proves a custom .scr ran at all ("NVOK")
 mw.l 0x3300000 0x4b4f564e
 fatwrite usb 0:auto 0x3300000 opentv_probe_ran.bin 4
 
-# 1) live U-Boot environment (text)
-env export -t -s 0x8000 0x3310000
-fatwrite usb 0:auto 0x3310000 opentv_uboot_env.txt 0x8000
+# 1) fs0 head, PEB0..7 @0x1fc0000 (2 MiB): UBI volume table (layout
+#    volume) -> ap0 volume type/static-or-dynamic + rsvd_pebs capacity
+nand read 0x3300000 0x1fc0000 0x200000
+fatwrite usb 0:auto 0x3300000 dump_fs0_head.bin 0x200000
 
-# 2) FULL xbootdat @0x2c0000, 1.25 MiB (saved recovery kernel cmdline)
-nand read 0x3300000 0x2c0000 0x140000
-fatwrite usb 0:auto 0x3300000 dump_xbootdat_full.bin 0x140000
-
-# 3) fdt0 device tree @0xac0000, 512 KiB (/chosen bootargs)
-nand read 0x3300000 0xac0000 0x80000
-fatwrite usb 0:auto 0x3300000 dump_fdt0.bin 0x80000
-
-# 4) apdat0 = /conf writable partition @0xe340000, 10 MiB
-#    (remote.txt gdbserver/CIFS path + USB-download state; read-only here)
-nand read 0x3300000 0xe340000 0xa00000
-fatwrite usb 0:auto 0x3300000 dump_apdat0.bin 0xa00000
-
-echo OPENTV-PROBE v2: done
-%
+echo OPENTV-PROBE v5: done
+% <- this is end of file symbol
