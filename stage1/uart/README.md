@@ -45,7 +45,11 @@ the mainboard's service pads.
    a 3.3/5V jumper or are 3.3 V logic with 5V-tolerant… verify per
    module; when in doubt a series 1k resistor on RX is a cheap
    protector).
-5. Terminal: `picocom -b 115200 /dev/ttyUSB0` (or screen/minicom).
+5. Terminal: no picocom/screen on this host and no sudo — use
+   `stage1/uart/serial_log.py` (passive timestamped boot capture,
+   pyserial, which IS installed) and `stage1/uart/serial_term.py`
+   (raw interactive terminal for the U-Boot bootdelay=60 window;
+   quit = Ctrl-]).
 
 ## What UART unlocks (ordered by payoff)
 
@@ -84,8 +88,11 @@ the mainboard's service pads.
 ## Status
 
 - [x] Firmware facts collected (above)
-- [ ] PulseView installed
+- [x] CP2102 + logging scripts ready (`serial_log.py`, `serial_term.py`;
+      pyserial 3.5 present, no picocom/screen on host — no sudo needed)
 - [ ] Board pad identification (GND / TX / RX) — needs the board
-      accessible + LA
+      accessible; passive TX-hunt = CP2102 RX on candidate pad + GND,
+      boot TV, readable ASCII at 115200 = console TX (garbage = wrong
+      pad or wrong baud; IR-remote bursts = the IR UART, not console)
 - [ ] First console capture of a normal boot
 - [ ] First U-Boot interrupt (`bootdelay=60` window)
