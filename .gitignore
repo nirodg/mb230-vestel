@@ -20,6 +20,7 @@
 !stage1/uboot/opentv_write_ap0_v31.scr
 !stage1/uboot/opentv_write_conf_v33.scr
 !stage1/uboot/opentv_write_ap0_v32.scr
+!stage1/uboot/opentv_write_ap0_v321.scr
 *.img
 kylo_usb_update.*
 MD30010_*
