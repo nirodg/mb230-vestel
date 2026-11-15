@@ -9,7 +9,7 @@
 # post-mortem diagnosis of aurora's exit.
 # Goal: stable system + persistent root shell (:23) on a fully-live idtv.
 # Fresh session, apdat0 as the first and only UBI attach (proven).
-# Image: conf_v38.ubifs (3,809,280 B = 0x3a2000, crc32 98df9e17).
+# Image: conf_v38.ubifs (3,809,280 B = 0x3a2000, crc32 2b48b972).
 
 echo OPENTV-CONFV38: begin (ARMED, conf <- conf_v38.ubifs liveness v38)
 
@@ -22,8 +22,8 @@ ubi write 0x3300000 apdat0 0x3a2000
 
 mw.l 0x3300000 0x00000000 1
 ubi read 0x3300000 apdat0 0x3a2000
-if crc32 0x3300000 0x3a2000 98df9e17; then
-    echo OPENTV-CONFV38: VERIFIED (crc32 98df9e17)
+if crc32 0x3300000 0x3a2000 2b48b972; then
+    echo OPENTV-CONFV38: VERIFIED (crc32 2b48b972)
     mw.l 0x3300000 0x4b4f564e
     fatwrite usb 0:auto 0x3300000 v38_conf_ok.bin 4
 else

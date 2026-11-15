@@ -9,7 +9,7 @@
 # remote.txt after startup and snapshots /tmp/stdout.all for diagnosis.
 # Goal: stable system + persistent root shell (:23) on a fully-live idtv.
 # Fresh session, apdat0 as the first and only UBI attach (proven).
-# Image: conf_v39.ubifs (3,809,280 B = 0x3a2000, crc32 e0d6f210).
+# Image: conf_v39.ubifs (3,809,280 B = 0x3a2000, crc32 af8b1171).
 
 echo OPENTV-CONFV39: begin (ARMED, conf <- conf_v39.ubifs liveness v39)
 
@@ -22,8 +22,8 @@ ubi write 0x3300000 apdat0 0x3a2000
 
 mw.l 0x3300000 0x00000000 1
 ubi read 0x3300000 apdat0 0x3a2000
-if crc32 0x3300000 0x3a2000 e0d6f210; then
-    echo OPENTV-CONFV39: VERIFIED (crc32 e0d6f210)
+if crc32 0x3300000 0x3a2000 af8b1171; then
+    echo OPENTV-CONFV39: VERIFIED (crc32 af8b1171)
     mw.l 0x3300000 0x4b4f564e
     fatwrite usb 0:auto 0x3300000 v39_conf_ok.bin 4
 else
