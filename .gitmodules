@@ -1,3 +1,6 @@
 [submodule "usb-injection/tools"]
 	path = usb-injection/tools
 	url = git@github.com:nirodg/mb230-tools.git
+[submodule "tools/apt"]
+	path = tools/apt
+	url = https://salsa.debian.org/apt-team/apt.git

@@ -55,16 +55,26 @@ Semaphores and readiness: `mysem_idtv` / `semaphore_idtv` post/open failures, `m
 
 **High-level logic (from decomp):**
 1. Logs entry; obtains last removable mount point (`RmDev_GetLastMountPoint`). Aborts with debug prints if none.
-2. **Profile/config import/export (NonVolatile/USB copy):** conditional on presence markers/files on USB (`FUN_00766354` checks), calls `NonVolatile_CopyUSB(mount, …, direction)` to copy profile/config sets (import/export modes observed). (Helpers operate on hw/sw/dev/lang/profile and related data; exact filenames resolved via internal strings/tables in rodata.)
+2. **Profile/config import/export (NonVolatile/USB copy):** conditional on presence markers/files on USB (`FUN_00766354` checks), calls `NonVolatile_CopyUSB(mount, …, direction)` to copy profile/config sets (import/export modes observed). Helpers operate on hw/sw/dev/lang/profile and related data.
 3. **Device/log/config collection & packaging to USB:** when appropriate markers absent/present per branch, creates timestamped output on USB, iterates known log/state file slots (mutex-protected), reads and aggregates into output files, may tar/gzip bundles (`snprintf` of commands + `system`), removes empty artifacts, syncs.
 4. **Boot logo / images:** validates JPEG and can write boot logo to MTD via `DEV_MTD_UpdateImage` (partition selector arg observed as 2 in this path), syncs STR logo (`ice_hardware_SyncStrLogo`), copies related files.
-5. **Panel/PQ/EDID/AQ/config/Dolby/browser/other files:** numerous `FUN_00766e30` copy operations between USB and system paths (e.g. PQ/PCF/PQF, panel/EDID-related, AQ, Dolby configs, browser data, ip_tuner/ntp/power_up, etc.), with some conditional “upload”/backup behaviors based on marker files.
+5. **Panel/PQ/EDID/AQ/config/Dolby/browser/other files:** numerous `FUN_00766e30` copy operations between USB and system paths with marker-gated directions (import/download vs export/upload).
 6. **ROFIX & credentials area:** `PLAT_ROFIX_UpdateFromDirectory(<usb>/...)` and backup-to-directory paths invoked (sensitive region handling).
 7. **TCON:** `RmDev_UpdateTconFromUSB` / `RmDev_BackupTconFromUSB` with marker checks.
 8. **Panel params sync:** `PLAT_Fact_SyncPanelParametersToXbootData` on marker.
-9. **Finalize:** `sync()`, `PerformConfBackup()`, success logging. (Function returns void in decomp; success tracked internally.)
+9. **Finalize:** `sync()`, `PerformConfBackup()`, success logging.
 
-**Observed strings/xrefs associated (non-exhaustive):** `/DownloadProfile.mb230`, `PerformUSBOperations`, `NEBULA_SystemConfigurationPerformUSBOperations` (01155f20 → Nebula performUSBOperations), paths/names for `/conf/PCF.pcf`, `/conf/PQF.bin`, `/conf/AQ.bin`, `/conf/Dolby.cfg`, `/conf/service_menu.txt` context elsewhere, browser/ip_tuner/ntp/power_up, boot logo/SPI/STR logo, `_CopyRamLogtoUSB`, `Download/Upload/Copy` operations to/from removable device, etc.
+**Resolved rodata markers/paths (from decomp pointer strings, non-exhaustive):**
+- Markers/triggers: `/UploadNvram.mb230`, `/DownloadNvram.mb230`, `/DownloadBI.mb230` (boot logo), `/DownloadProfile.mb230`, `/DownloadPQ.mb230`, `/DownloadSpi.mb230`, `/DownloadTcon.mb230`, `/DownloadSerialModelNo.txt`, `/config_update/config_update.txt`, `/enable_coredump`.
+- Exports/collections: `/syslog` (USB target area), packaged logs/backup bundles (timestamped naming in code).
+- Boot logo/SPI: `/spi/boot_logo.bin`, `/logo.jpg`, `/spi`.
+- Sound/AQ/DSP configs: `/sound/AQ.bin`, `/sound/DAP_SE_SetParam.txt`, `/sound/DAPV2_SE_SetParam.txt`, `/sound/DTS_VX_AQ.bin`, `/sound/subw_config_file.txt`, `/sound/ad82586c_config_file.txt` ↔ `/conf/AQ.bin`, `/conf/DAP_SE_SetParam.txt`, `/conf/DAPV2_SE_SetParam.txt`, `/conf/DTS_VX_AQ.bin`, `/conf/subw_config_file.txt`, `/conf/ad82586c_config_file.txt`.
+- PQ/panel/Dolby: `/pq/PCF.pcf`, `/pq/PQF.bin`, `/pq/ptf.ptf`, `/pq/dolby.bin`, `/pq/Dolby.cfg` ↔ `/conf/PCF.pcf`, `/conf/PQF.bin`, `/conf/ptf.ptf`, `/conf/dolby.bin`, `/conf/Dolby.cfg`.
+- Browser/app config: `/browser_parameters.txt`, `/starturl.txt`, `/default_application.txt`, `/dragonfly_server.txt`, `/iplayer_client.inf`, `/vestel_key.p12`, `/thorium_config.xml`.
+- Network/misc: `/ntpserver.txt`, `/forced_ntpserver.txt`, `/demo_commands.txt`, `/conf/power_up.txt`.
+- Coredump/debug flag: `/conf/force_enable_coredump`.
+
+(Exact direction, gating, and destination subpaths depend on the specific `FUN_00766e30`/`FUN_00766354` call sites and rodata formats; use as a map for further targeted tracing.)
 
 **Implication:** this is the implementation behind service-menu USB import/export flows (profiles, logs, PQ/panel assets, configs). It is powerful and touches MTD/ROFIX/panel/credentials-adjacent areas — **high-risk** to alter; useful reference for safe, reversible customization via supported file drops on USB.
 
@@ -126,11 +136,54 @@ Semaphores and readiness: `mysem_idtv` / `semaphore_idtv` post/open failures, `m
 
 ---
 
-## 9. Artifacts, coverage, and next steps
+## 9. Startup, hardware init, and main loop (decompiled)
+
+- **`006f3e5c _start`** → calls **`__libc_start_main`** with program entry/main (rodata-resolved function pointer) and init/fini handlers, then `abort` on return. The actual `main` symbol/address is resolved via `.init_array`/libc startup conventions (further tracing of the rodata pointer yields the application entry; multiple `main`-named symbols exist in the binary image, typical of linked components/static libs, so entry resolution should be correlated with runtime/init behavior).
+- **`0073bac0 ICE_HardwareInit`** (very large, ~4 KB; caller e.g. early init path): performs broad platform bring-up — profile/board/feature queries, boot-logo/STR and special-key/exit-type handling, power-up/fast-boot parameter restore, MCU/RC init, EDID order, panel/VOUT/VUI/DSP/NIM/audio/video/pq/callisto/DRM/CEC/network/USB/storage related initialization, debug/console/signal setup hooks, environment/file checks, sync of state to xboot/MCU where applicable. Central to making the rest of aurora functional.
+- **`00746f94 _ice_start_mainLoop`**: creates a GLib main loop (`g_main_loop_new`) and spawns a thread to run it for media/player contexts (used by media player select/play/get-details paths).
+
+## 10. APM (Application/Process Manager) and app lifecycle (decompiled)
+
+- **`007842a8 ICE_APMInit`** (caller `0099c22c APMInit`): initializes APM state/callback structs, waits for appmgr/readiness, prepares brand/software/version context files under writable areas (via `PLAT_PRIVCTRL_System`/fopen/fwrite), registers APM (`ice_APM_Register`), creates worker/monitor tasks (`PLAT_OS_CreateTask`), registers NPC/PQ APM callback, sets ready flags.
+- **`00785280 ICE_APMRun`** (large; caller `0099c918 run`): core app-run/transition logic by app/mode id. Manages OSD/plane/alpha/video-audio path switching, wake/stop/probe/start of app processes (`ice_APM_Probe/Start/StopProcess`), DIAL/URL handling, PQ/picture restore, and input/focus state.
+  - **Resolved process/launch identifiers (rodata):** case paths reference managed app/process names such as `netflix` (`01254ad3`), `amazon` (`01262017`), `youtube` (`01476f48`), and `youtube_test` (`01260d32`).
+  - **Resolved launch/URL fragments:** e.g. Netflix additional-data URL (`source_type=19&additionalDataUrl=.../apps/Netflix/dial_data...`), YouTube menu/remote DIAL-style launches (`launch=menu|remote&additionalDataUrl=.../apps/YouTube/dial_data...`), recommendation params (`youtube_recommendation_video_id|channel_id|playlist_id`), and `dialLaunch` handling — showing APM coordinates process start with dial/URL context for OTT apps.
+- **`00784094 ICE_APMHandleKeypress`**: routes keypresses into APM/focus context (hotkey/app-aware handling).
+- **Other APM APIs:** `ICE_APMStop/Suspend/Wakeup`, focus/resource acquire/lose, Netflix/standby flags, logout helpers (Amazon/YouTube/Netflix), language/country, sleep mode — collectively control app foregrounding and power/UX transitions.
+
+**Implication for “new app entries”:** adding a first-class app in stock UI likely requires integration at APM/app-registration and UI/launcher layers (process start command/URL, focus/resource handling, hotkeys), not just placing binaries.
+
+## 11. UI launcher and app registration (decompiled, C++ framework)
+
+- **`00ab8874 CAApplicationManager::registerApp`** (caller `00abb17c informApplicationAdd`): sanity-checks and stores an app record in an internal table (indexed by count at `this+0x100`, entry stride `0x10`) containing type/id, a 16-bit field, and an app info/string copied to `UString` (capacity up to 0x10 entries observed in guard). **`00ab88e8 deregisterApp`** removes entries (not shown here in full). This is a concrete in-process app registry used by the Cabot/Nebula UI stack.
+- **`00cc7074 DemoApp::startLauncherApplication(UString const&, bool)`** (many UI callers: open-selected-app/menu/button/AVS/ODC paths): resolves the selected app identifier string and dispatches to handlers.
+  - **Resolved id/match strings (rodata):** checks availability and matches/substrings against **`netflix.swf`** (→ `handleNetflixRequest`), **`amazon.swf`** (→ `handleAmazonRequest`), **`youtube.swf`** and **`youtube_recommendation`** (Cobalt/profile-gated → `handleYoutubeRequest` with mode/URL context). Trace strings observed: “Open Netflix Application”, “Open Amazon Prime Application”, “Open Youtube Application from Launcher/Recommendation”.
+  - **Fallback/on-demand:** resolves content/launcher item or browser/ODC context → `launchOnDemandContentWithContext` or posts UI key/message to framework/browser path. Uses `Profile_IsCobaltSupportEnabled` and connectivity/Novo configuration checks. This is a key **string-id → launch-handler** junction in the stock launcher flow.
+- **Novo launcher framework:** numerous `NovoLauncherItem`/launcher-manager/data-provider and selection/start helpers (`startLauncherApplication`, `initialiseLauncherSourceItems`, `getSelectedLauncherItemId`, etc.) manage launcher UI state and invoke launch.
+
+**Implication for “new app entries”:** feasible customization points include (a) launcher item/config sources feeding `startLauncherApplication` with recognized ids, (b) extending handler/id matching and backing app start (APM/process/URL), and/or (c) `CAApplicationManager` registration — all require understanding expected id strings, resources, and lifecycle. Where ids/assets are data-driven (configs/resources on `/vendor` or `/conf`), config-level extension may be possible; otherwise binary patching or rebuilt UI components are needed (validate per-firmware).
+
+## 12. Input helpers and dispatch glue (decompiled)
+
+- **`00761880`**: maps raw/translated key data to internal key code/long-press timing parameters (table/lookup-driven; returns success and outputs duration/code info used by dispatcher).
+- **`00761cf8`**: key action handler/dispatcher invoked from the key thread for resolved key events (large switch/logic; integrates with UI/APM/actions).
+- **`00762aa0 ice_IsButtonLong`**: determines long-press state given key, repeat state, and threshold timing.
+- **`0076330c ice_Netflix_IR_Callback`**: Netflix-specific IR/key callback path coordinating with APM/sleep/hotkey behavior.
+- **`007643ec ICE_KeyRepeatOn` / `007644a4 ICE_KeyRepeatOff` / `007649c8 ICE_CallKeyPressFunction` / `00765384 ice_SendKey`**: repeat state and synthetic/injected key delivery helpers.
+
+Together with **`00763dc0 ice_KeyEventDispatchThread`** (§3.1), these form the end-to-end path from UART/IR input to app/UI actions and privileged triggers.
+
+## 13. USB/profile helpers (additional decompiled detail)
+
+- **`00755988 NonVolatile_CopyUSB(mount, name, direction)`**: mutex-guarded copy of profile/config sets between USB mount and internal storage using constructed shell commands (`snprintf`/`ice_system_command`), with pre/post sync and cleanup; direction selects import vs export behavior for hw/sw/dev (and related) profile artifacts.
+- **`0073afac PerformConfBackup`**: backs up `/conf`-related state (used at end of `PerformUSBOperations` and elsewhere) to preserve configuration.
+- **`00766354` / `00766e30`**: marker existence check and conditional file copy helpers used per-file in `PerformUSBOperations` (rodata-resolved paths/names select specific PQ/AQ/PCF/Dolby/browser/panel/tuner/config targets).
+
+## 14. Artifacts, coverage, and next steps
 
 - **Ghidra project (local, not committed):** `/tmp/opencode/ghidra-proj/aurora121` (analyzed `aurora_stock.elf`).
-- **Exports (local, not committed):** `/tmp/opencode/ghidra-out/` — `functions.tsv`, `key_strings.txt`, `key_functions_decompiled.c`, `focused_functions_decompiled.c`, `targeted_decompiled.c`, `program_info.txt`.
-- **Coverage:** 45 focused + 16 targeted functions decompiled with call context, plus key-string/xref inventory over 90k recovered functions; many framework (Nebula/EASI/Novo/CA*) functions identified but not all decompiled here. Full per-function decompilation of the entire binary is feasible with extended scripted passes but large.
-- **Recommended follow-ups (targeted Ghidra):** (a) enumerate and decompile `ice_KeyEventDispatchThread`’s full action/dispatch table and menu/app-launch call graph, (b) decompile Nebula/EASI app-manager/menu registration paths for “new app entry” hooks, (c) trace `PerformUSBOperations` rodata-resolved paths/markers to an exact file manifest, (d) map APM app lifecycle and focus transitions, (e) service-menu command handlers and factory gates, (f) validate on-device with reversible `/conf`/sidecar experiments only.
+- **Exports (local, not committed):** `/tmp/opencode/ghidra-out/` — `program_info.txt`, `functions.tsv` (~90k), `key_strings.txt`, `focused_functions_decompiled.c`, `targeted_decompiled.c`, `more_decompiled.c`, plus ad-hoc extracts.
+- **Coverage:** headless auto-analysis of the full binary; decompiled evidence now includes startup/lifecycle hooks, `ICE_HardwareInit`, APM init/run/keypress, input dispatch and helpers, USB operations and helpers, Callisto/NDFW OAD chain, and key UI/app-registry/launcher functions (`CAApplicationManager::registerApp`, `DemoApp::startLauncherApplication`). Large Nebula/EASI/Novo/CA C++ surfaces remain only partially decompiled.
+- **Recommended follow-ups (targeted Ghidra):** (a) resolve `main`/init-array entry and appmgr/privserver/semaphore/watchdog contract in code, (b) dump/resolve rodata string tables for `PerformUSBOperations` and key-dispatch action tables to exact file/key manifests, (c) enumerate all `startLauncherApplication` id matches and their backing handlers/start commands (and launcher item/config sources on filesystem), (d) trace APM app ids/process names/URLs and `CAApplicationManager` population sites, (e) decompile service-menu command handlers and factory gates, (f) validate changes only via reversible `/conf`/sidecar experiments with full backups.
 
 This document, together with `AURORA_ELF_ANALYSIS.md`, provides a Ghidra-backed decode of the stock `aurora.elf` sufficient to guide informed, reversible customization and to target further RE where native app-entry/UI modifications are required.
