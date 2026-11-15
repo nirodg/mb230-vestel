@@ -20,7 +20,7 @@ Not to mention the HDMI ports sometimes works sometimes doesn't.
 - [ARCHITECTURE.MD](ARCHITECTURE.md) A detailed architecture spec based on my own analysis. Kudos to https://clixad.io/ for FREE LLM usage. 
 - [usb-injection/tools/hello-world/](usb-injection/tools/hello-world/) ([repo](https://github.com/nirodg/mb230-hello-world)) — minimal custom app proof (ARM binary + source + Docker build script) that can be uploaded and run directly via telnet once you have a root shell. Includes the first prebuilt `hello` binary.
 - [usb-injection/tools/gui-hello-world/](usb-injection/tools/gui-hello-world/) ([repo](https://github.com/nirodg/mb230-gui-hello-world)) — second test: framebuffer GUI "Hello World" app with on-screen button/status feedback for remote/input events (Docker-built static ARM binary, uploadable via telnet).
-- [usb-injection/tools/apt/](usb-injection/tools/apt/) ([upstream](https://salsa.debian.org/apt-team/apt)) — APT source tracked as a submodule, intended for building/porting full CLI package-management tooling for the TV (`armv7l`, Linux 4.9.x).
+- [usb-injection/tools/apt/](usb-injection/tools/apt/) ([repo](https://github.com/nirodg/mb230-apt), [upstream](https://salsa.debian.org/apt-team/apt)) — APT source tracked as a submodule, intended for building/porting full CLI package-management tooling for the TV (`armv7l`, Linux 4.9.x).
 - 🚀 Downgrading info, see bellow!
 - 🔓 **Jailbreak / root shell via USB injection — see [mb230-usb-jailbreak](https://github.com/nirodg/mb230-usb-jailbreak)** (live proof: stock TV fully working + `telnet` root)
 
