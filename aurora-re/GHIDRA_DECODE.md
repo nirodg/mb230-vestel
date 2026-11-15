@@ -136,54 +136,71 @@ Semaphores and readiness: `mysem_idtv` / `semaphore_idtv` post/open failures, `m
 
 ---
 
-## 9. Startup, hardware init, and main loop (decompiled)
+## 9. Startup, hardware init, and bootstrap chain (decompiled)
 
-- **`006f3e5c _start`** → calls **`__libc_start_main`** with program entry/main (rodata-resolved function pointer) and init/fini handlers, then `abort` on return. The actual `main` symbol/address is resolved via `.init_array`/libc startup conventions (further tracing of the rodata pointer yields the application entry; multiple `main`-named symbols exist in the binary image, typical of linked components/static libs, so entry resolution should be correlated with runtime/init behavior).
-- **`0073bac0 ICE_HardwareInit`** (very large, ~4 KB; caller e.g. early init path): performs broad platform bring-up — profile/board/feature queries, boot-logo/STR and special-key/exit-type handling, power-up/fast-boot parameter restore, MCU/RC init, EDID order, panel/VOUT/VUI/DSP/NIM/audio/video/pq/callisto/DRM/CEC/network/USB/storage related initialization, debug/console/signal setup hooks, environment/file checks, sync of state to xboot/MCU where applicable. Central to making the rest of aurora functional.
-- **`00746f94 _ice_start_mainLoop`**: creates a GLib main loop (`g_main_loop_new`) and spawns a thread to run it for media/player contexts (used by media player select/play/get-details paths).
+- **`006f3e5c _start`** → `__libc_start_main(...)` → `abort` on return (entry/main resolved via libc/init linkage).
+- **`0069d950 main`**: argument handling for `-v/--version` (prints SVN URL/revision via `getSVNURL`, `getSVNGlobalRevisionInfo`) and `-h/--help`/usage; in normal execution path calls **`FUN_00728608`**.
+- **`00728608` (primary bootstrap, caller `0069d950`)**:
+  1. `ICE_InitialiseSystemMemory()` (`00754a2c`, registers signal handlers `debugRegisterSignalHandlers`).
+  2. Stores PID (`getpid`).
+  3. `ICE_DebugInit()` (`007298bc`, waits for debug readiness, registers debug commands).
+  4. `profileManagerStart()` (`00728674`: `ProfileManager::getInstance`, attaches multiple `ROMProfile` sources).
+  5. `FROST_DebugStartConsole()` (`00729248`: console/testtool tasks/commands as enabled).
+  6. `ICE_HardwareInit()` (`0073bac0`).
+  7. `ICE_InitRTC()` (`0076d4c0`: `PLAT_OS_SyncRTCFromSTBC`).
+  8. `eclipseStart()` (`009217b8`: `preemptiveNetworkInit`, `new StandardSettop`, `StandardSettop::initialise`).
+  9. Infinite `FROST_Sleep(...)` loop.
+- **`0073bac0 ICE_HardwareInit`** (very large): broad platform bring-up (profiles/board flags, STR/boot/special-key/exit handling, power-up restore, MCU/RC/EDID, panel/VOUT/DSP/NIM/A/V/PQ/Callisto/DRM/CEC/network/USB/storage, debug hooks, env/file/tag checks, xboot/MCU sync).
+- **`00746f94 _ice_start_mainLoop`**: GLib main loop in a thread for media/player contexts.
+- **Note:** another `main` symbol exists (`006a0ac4`, `CECInterface::main`) in a different C++ context.
 
 ## 10. APM (Application/Process Manager) and app lifecycle (decompiled)
 
-- **`007842a8 ICE_APMInit`** (caller `0099c22c APMInit`): initializes APM state/callback structs, waits for appmgr/readiness, prepares brand/software/version context files under writable areas (via `PLAT_PRIVCTRL_System`/fopen/fwrite), registers APM (`ice_APM_Register`), creates worker/monitor tasks (`PLAT_OS_CreateTask`), registers NPC/PQ APM callback, sets ready flags.
-- **`00785280 ICE_APMRun`** (large; caller `0099c918 run`): core app-run/transition logic by app/mode id. Manages OSD/plane/alpha/video-audio path switching, wake/stop/probe/start of app processes (`ice_APM_Probe/Start/StopProcess`), DIAL/URL handling, PQ/picture restore, and input/focus state.
-  - **Resolved process/launch identifiers (rodata):** case paths reference managed app/process names such as `netflix` (`01254ad3`), `amazon` (`01262017`), `youtube` (`01476f48`), and `youtube_test` (`01260d32`).
-  - **Resolved launch/URL fragments:** e.g. Netflix additional-data URL (`source_type=19&additionalDataUrl=.../apps/Netflix/dial_data...`), YouTube menu/remote DIAL-style launches (`launch=menu|remote&additionalDataUrl=.../apps/YouTube/dial_data...`), recommendation params (`youtube_recommendation_video_id|channel_id|playlist_id`), and `dialLaunch` handling — showing APM coordinates process start with dial/URL context for OTT apps.
-- **`00784094 ICE_APMHandleKeypress`**: routes keypresses into APM/focus context (hotkey/app-aware handling).
-- **Other APM APIs:** `ICE_APMStop/Suspend/Wakeup`, focus/resource acquire/lose, Netflix/standby flags, logout helpers (Amazon/YouTube/Netflix), language/country, sleep mode — collectively control app foregrounding and power/UX transitions.
+- **`007842a8 ICE_APMInit`** (caller `0099c22c APMInit`): waits appmgr readiness, initializes APM state/callbacks, prepares brand/software/version context (writable files), `ice_APM_Register` (`00784254` → `LIBNAM_APP_Register`), creates worker tasks, registers NPC/PQ APM callback.
+- **`00785280 ICE_APMRun`** (caller `0099c918 run`): app/mode transitions — OSD/plane/alpha and A/V switching, `ice_APM_Probe/Start/StopProcess`, DIAL/URL handling, PQ restore, input/focus coordination.
+  - **Resolved process names (rodata):** `netflix`, `amazon`, `youtube`, `youtube_test`.
+  - **Resolved URL/context fragments:** Netflix/YouTube dial `additionalDataUrl` paths, `launch=menu|remote`, `dialLaunch`, `youtube_recommendation_video_id|channel_id|playlist_id`.
+- **IPC process control (appmgr via `LIBNAM_APP_SendCommand`):**
+  - `ice_APM_StartProcess` (`00784604`): cmd `0x106`, payload name/args, type 2.
+  - `ice_APM_StopProcess` (`007846a0`): cmd `0x106`, type 1, stop flag.
+  - `ice_APM_ProbeProcessStatus` (`00784740`): cmd `0x104`, returns status.
+- **Other APM APIs:** `ICE_APMHandleKeypress` (`00784094`), `ICE_APMStop/Suspend/Wakeup`, focus/resource, Netflix/Amazon/YouTube helpers, country/language/sleep/hotkey logic.
 
-**Implication for “new app entries”:** adding a first-class app in stock UI likely requires integration at APM/app-registration and UI/launcher layers (process start command/URL, focus/resource handling, hotkeys), not just placing binaries.
+**Implication:** “new app entry” behavior in stock stack depends on launcher/UI ids, APM run/start/stop/focus, and appmgr IPC — not binary placement alone.
 
 ## 11. UI launcher and app registration (decompiled, C++ framework)
 
-- **`00ab8874 CAApplicationManager::registerApp`** (caller `00abb17c informApplicationAdd`): sanity-checks and stores an app record in an internal table (indexed by count at `this+0x100`, entry stride `0x10`) containing type/id, a 16-bit field, and an app info/string copied to `UString` (capacity up to 0x10 entries observed in guard). **`00ab88e8 deregisterApp`** removes entries (not shown here in full). This is a concrete in-process app registry used by the Cabot/Nebula UI stack.
-- **`00cc7074 DemoApp::startLauncherApplication(UString const&, bool)`** (many UI callers: open-selected-app/menu/button/AVS/ODC paths): resolves the selected app identifier string and dispatches to handlers.
-  - **Resolved id/match strings (rodata):** checks availability and matches/substrings against **`netflix.swf`** (→ `handleNetflixRequest`), **`amazon.swf`** (→ `handleAmazonRequest`), **`youtube.swf`** and **`youtube_recommendation`** (Cobalt/profile-gated → `handleYoutubeRequest` with mode/URL context). Trace strings observed: “Open Netflix Application”, “Open Amazon Prime Application”, “Open Youtube Application from Launcher/Recommendation”.
-  - **Fallback/on-demand:** resolves content/launcher item or browser/ODC context → `launchOnDemandContentWithContext` or posts UI key/message to framework/browser path. Uses `Profile_IsCobaltSupportEnabled` and connectivity/Novo configuration checks. This is a key **string-id → launch-handler** junction in the stock launcher flow.
-- **Novo launcher framework:** numerous `NovoLauncherItem`/launcher-manager/data-provider and selection/start helpers (`startLauncherApplication`, `initialiseLauncherSourceItems`, `getSelectedLauncherItemId`, etc.) manage launcher UI state and invoke launch.
+- **`00ab8874 CAApplicationManager::registerApp`** (caller `00abb17c informApplicationAdd` via `CAStackServer`): in-process table at `this+0x100`, stride `0x10`, guard/capacity 0x10 in checked path; stores type, 16-bit field, copied `UString` app info. **`00ab88e8 deregisterApp`** removes entries.
+- **App availability/start notifications (CI/MHEG/HbbTV paths):** `CAStackServer::informApplicationAvailable` builds async MHEG launch message to EASI control (subtitle/profile context); `ApplicationMMISession::informApplicationStart` → `INCA_MHEGApplicationStart` / `INCA_HbbTVApplicationStart`.
+- **`00cc7074 DemoApp::startLauncherApplication(UString const&, bool)`**: string-id dispatch (resolved rodata) — `netflix.swf` → `handleNetflixRequest`, `amazon.swf` → `handleAmazonRequest`, `youtube.swf` / `youtube_recommendation` (Cobalt/profile-gated) → `handleYoutubeRequest`; fallback to on-demand/browser/content launch or UI message posting.
+- **UI open flow:** `FullScreenMarketDialog::openSelectedApp` (`00cecac4`) / `FullScreenPortalDialog::openSelectedApp` (`00ceeb80`) resolve selected `NovoLauncherItem` (id/url/name), set logging/CID/input context, invoke `startLauncherApplication`.
+- **Novo launcher framework:** `NovoLauncherItem`/manager/data-provider and DB-backed sources (`SqliteLauncherDatabaseAdapter` insert/update/remove/update-all in symbol/string evidence), portal/market sync and recommendation/settings flows; launcher UI assets/strings present. `novoLauncherManager()` accessor used widely.
 
-**Implication for “new app entries”:** feasible customization points include (a) launcher item/config sources feeding `startLauncherApplication` with recognized ids, (b) extending handler/id matching and backing app start (APM/process/URL), and/or (c) `CAApplicationManager` registration — all require understanding expected id strings, resources, and lifecycle. Where ids/assets are data-driven (configs/resources on `/vendor` or `/conf`), config-level extension may be possible; otherwise binary patching or rebuilt UI components are needed (validate per-firmware).
+**Implication:** extension points are (a) data/config sources feeding launcher items/ids, (b) id→handler/start mapping, (c) CA/appmgr registration and lifecycle — feasibility depends on per-firmware data provenance vs hardcoded handlers.
 
-## 12. Input helpers and dispatch glue (decompiled)
+## 12. Input, key decode, and dispatch glue (decompiled)
 
-- **`00761880`**: maps raw/translated key data to internal key code/long-press timing parameters (table/lookup-driven; returns success and outputs duration/code info used by dispatcher).
-- **`00761cf8`**: key action handler/dispatcher invoked from the key thread for resolved key events (large switch/logic; integrates with UI/APM/actions).
-- **`00762aa0 ice_IsButtonLong`**: determines long-press state given key, repeat state, and threshold timing.
-- **`0076330c ice_Netflix_IR_Callback`**: Netflix-specific IR/key callback path coordinating with APM/sleep/hotkey behavior.
-- **`007643ec ICE_KeyRepeatOn` / `007644a4 ICE_KeyRepeatOff` / `007649c8 ICE_CallKeyPressFunction` / `00765384 ice_SendKey`**: repeat state and synthetic/injected key delivery helpers.
+- **`00763dc0 ice_KeyEventDispatchThread`**: reads `DEV_Uart_GetKey`, maps raw codes via `FUN_00761880`, applies repeat/long-press (`ice_IsButtonLong` `00762aa0`, `ice_dispatch_long_button`, `ICE_IsKeyRepeatOn`) and hotkey/APM/profile gating (`ice_DFB_IsHotKey`, `ICE_APMGetRunningApp/SleepMode`, feature flags), dispatches via `FUN_00761cf8` and related handlers; logs PQ/key state in some paths.
+  - **Hidden USB-ops trigger (evidence):** for internal digit-key range `0x200–0x209`, dispatcher processes sequence accumulation (`FUN_0122e3dc(acc*10 + (key-0x200), DAT_007643c4)` with `DAT_007643c4=1000000`) and, when accumulator/global at `DAT_007643c0` equals **`472569`** (`DAT_007643c8`), calls **`PerformUSBOperations()`** then resets accumulator. Non-matching key handling resets sequence (keys in `0x9d0–0x9d9` treated specially in branch logic). Distinct from service-menu `MENU 4725` access (`RESEARCH.MD`); validate on-device.
+- **`00761880`**: decodes raw key payloads across protocol/type cases (incl. system/address extraction and validation against stored RC config) and maps command via `mapVestelKey`; returns `0x2f1` for invalid/unmapped.
+- **`007617c0 mapVestelKey`**: table lookup mapping RC command byte to internal key id (returns `0x2f1` if not found); optional debug print gated by profile.
+- **`00761cf8`**: routes resolved key events — suspend-to-RAM on specific `0x21f` state, DVD-source key filtering, hotel/fair-feature/Netflix gating, diagnostic pattern checks on `0x21f/0x9ef`, forwards to Netflix callback or `ice_SendKeyToMw`; integrates with backlight/app-running state.
+- **Helpers:** `ICE_KeyRepeatOn/Off` (`007643ec/007644a4`), `ICE_CallKeyPressFunction` (`007649c8`), `ice_SendKey` (`00765384`), `ice_Netflix_IR_Callback` (`0076330c`), remote init/UART IR simulator hooks.
 
-Together with **`00763dc0 ice_KeyEventDispatchThread`** (§3.1), these form the end-to-end path from UART/IR input to app/UI actions and privileged triggers.
+## 13. USB/profile helpers, service menu, and config surfaces
 
-## 13. USB/profile helpers (additional decompiled detail)
-
-- **`00755988 NonVolatile_CopyUSB(mount, name, direction)`**: mutex-guarded copy of profile/config sets between USB mount and internal storage using constructed shell commands (`snprintf`/`ice_system_command`), with pre/post sync and cleanup; direction selects import vs export behavior for hw/sw/dev (and related) profile artifacts.
-- **`0073afac PerformConfBackup`**: backs up `/conf`-related state (used at end of `PerformUSBOperations` and elsewhere) to preserve configuration.
-- **`00766354` / `00766e30`**: marker existence check and conditional file copy helpers used per-file in `PerformUSBOperations` (rodata-resolved paths/names select specific PQ/AQ/PCF/Dolby/browser/panel/tuner/config targets).
+- **`00755988 NonVolatile_CopyUSB`**: mutexed, command-based hw/sw/dev/lang profile copy (USB↔internal) with sync/cleanup.
+- **`0073afac PerformConfBackup`**: backs up `/conf`-related state (end of USB ops and other flows).
+- **`00766354` / `00766e30`**: marker existence and conditional copy helpers for `PerformUSBOperations` targets.
+- **Service menu flow:** `DemoApp::onShowServiceMenu` → `DemoApp::doMenuService` (`00cb7cc4`) → `ServiceMenuDialog` (SVG/MyMenu/General dialog stack). Handles modal actions/module state; can invoke USB operations via `NovoSystemConfiguration::performUSBOperations` with DVR/removable-device checks and prompts/auto-message flows. Guards: `isServiceMenuProfilePasscodeAvailable`, `controlServiceMenuPwd`, Philips variants/timers, capture-pwd flows; info/report via `getServiceMenuInfo`.
+- **Config/DB hints (strings):** `/conf/service_menu.txt`, `/conf/sqlite_db/settingsDB.db` (and related backup/copies), browser config paths (`/conf/browser/starturl.txt`, `/conf/browser/dragonfly_server.txt`), USB-side browser/app config names imported by `PerformUSBOperations`.
 
 ## 14. Artifacts, coverage, and next steps
 
-- **Ghidra project (local, not committed):** `/tmp/opencode/ghidra-proj/aurora121` (analyzed `aurora_stock.elf`).
-- **Exports (local, not committed):** `/tmp/opencode/ghidra-out/` — `program_info.txt`, `functions.tsv` (~90k), `key_strings.txt`, `focused_functions_decompiled.c`, `targeted_decompiled.c`, `more_decompiled.c`, plus ad-hoc extracts.
-- **Coverage:** headless auto-analysis of the full binary; decompiled evidence now includes startup/lifecycle hooks, `ICE_HardwareInit`, APM init/run/keypress, input dispatch and helpers, USB operations and helpers, Callisto/NDFW OAD chain, and key UI/app-registry/launcher functions (`CAApplicationManager::registerApp`, `DemoApp::startLauncherApplication`). Large Nebula/EASI/Novo/CA C++ surfaces remain only partially decompiled.
-- **Recommended follow-ups (targeted Ghidra):** (a) resolve `main`/init-array entry and appmgr/privserver/semaphore/watchdog contract in code, (b) dump/resolve rodata string tables for `PerformUSBOperations` and key-dispatch action tables to exact file/key manifests, (c) enumerate all `startLauncherApplication` id matches and their backing handlers/start commands (and launcher item/config sources on filesystem), (d) trace APM app ids/process names/URLs and `CAApplicationManager` population sites, (e) decompile service-menu command handlers and factory gates, (f) validate changes only via reversible `/conf`/sidecar experiments with full backups.
+- **Ghidra project (local, not committed):** `/tmp/opencode/ghidra-proj/aurora121`.
+- **Exports (local, not committed):** `/tmp/opencode/ghidra-out/` — `program_info.txt`, `functions.tsv` (~90k), `key_strings.txt`, `ptr_strings.txt`, `more_ptrs.txt`, `focused_functions_decompiled.c`, `targeted_decompiled.c`, `more_decompiled.c`, `full_decompiled.c`, `deep_decompiled.c`, `small_decompiled.c`, `selected_*.txt`, plus logs.
+- **Coverage (added this pass):** bootstrap chain (`0069d950`→`00728608` and callees), key dispatch internals and hidden USB sequence constants, key decode/map, APM IPC start/stop/probe, service-menu `doMenuService`/dialog wiring, launcher open-selected flows, CA/CI/MHEG/HbbTV app notification paths, additional pointer/string resolution.
+- **Comprehensive modding reference:** see `aurora-re/AURORA_MODDING_REFERENCE.md` (APIs/surfaces, USB manifest, app/launcher model, risks, tips & tricks).
+- **Recommended follow-ups:** (a) dump `mapVestelKey` table and fully enumerate decoded key ids/actions, (b) trace launcher/Novo item provenance on-device (SQLite schema/rows, portal caches, vendor resources), (c) map APM run modes to concrete start commands/binaries, (d) resolve `FUN_0122e3dc` accumulator semantics precisely and other hidden sequences, (e) enumerate `startLauncherApplication` handlers and on-demand/browser launch parameters, (f) full service-menu/factory handler/action map, (g) resolve remaining `PerformUSBOperations` per-site direction/conditions, (h) validate all mod hypotheses reversibly on-device.
 
-This document, together with `AURORA_ELF_ANALYSIS.md`, provides a Ghidra-backed decode of the stock `aurora.elf` sufficient to guide informed, reversible customization and to target further RE where native app-entry/UI modifications are required.
+This document, together with `AURORA_ELF_ANALYSIS.md` and `aurora-re/AURORA_MODDING_REFERENCE.md`, provides a Ghidra-backed decode of the stock `aurora.elf` to guide informed, reversible customization and to target further RE where native app-entry/UI modifications are required.
