@@ -1,0 +1,16 @@
+# OpenTV PROBE v7b  --  read-only. ONLY the /conf (apdat0) dump.
+# v7's fingerprint part already answered (ap0 = FACTORY). v7b exists
+# because v7's raw `nand read` after `ubi part fs0` failed silently —
+# the v4 probe proves the same read works WITHOUT a prior ubi attach,
+# so this script does no UBI attach at all.
+
+echo OPENTV-PROBE v7b: begin
+
+mw.l 0x3300000 0x4b4f564e
+fatwrite usb 0:auto 0x3300000 opentv_probe_ran.bin 4
+
+nand read 0x3300000 0xe340000 0xa00000
+fatwrite usb 0:auto 0x3300000 dump_apdat0_v7.bin 0xa00000
+
+echo OPENTV-PROBE v7b: done
+% <- this is end of file symbol

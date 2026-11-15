@@ -1,0 +1,28 @@
+# OpenTV /conf WRITE script  --  *** ARMED: THIS WRITES TV FLASH ***
+#
+# TEMPLATE ONLY. This is the one step that is NOT read-only. It rewrites
+# the whole apdat0 (/conf) UBI volume with our repacked image (current
+# /conf + remote.txt). apdat0 is a writable DATA volume (not signed, not
+# boot) so this cannot brick the boot chain; worst case /conf resets to
+# factory, and it is reversible by writing our saved original dump back.
+#
+# DO NOT deploy as kylo_usb_update.scr until:
+#   1) remote.txt has real PC IP + CIFS creds (make_conf_image.sh),
+#   2) conf_new.ubifs is on the stick root,
+#   3) __IMG_SIZE_HEX__ below is set to the image size in hex,
+#   4) the restore image (original apdat0) is also on the stick, and
+#   5) explicit go is given.
+#
+# Placeholders: __IMG_NAME__ (file on stick), __IMG_SIZE_HEX__ (its size).
+
+echo OPENTV-CONFWRITE: begin (ARMED)
+
+# load our repacked /conf image from the FAT stick into RAM
+fatload usb 0:auto 0x3300000 __IMG_NAME__
+
+# attach UBI on the apdat0 mtd partition and overwrite the volume
+ubi part apdat0
+ubi write 0x3300000 apdat0 __IMG_SIZE_HEX__
+
+echo OPENTV-CONFWRITE: done
+%

@@ -1,0 +1,33 @@
+# OpenTV ap0 WRITE v3.2.1 -- *** ARMED: WRITES TV FLASH ***
+#
+# v3.2 fixup: ap0 is mounted as /vendor, so /opentv_shim lives at
+# /vendor/opentv_shim (v3.2 pointed at /opentv_shim -> "does not exist").
+# v3.2.1: [idtv] program=/vendor/opentv_shim (shim unchanged).
+# Pairs with existing conf v3.3 (wrapper copies payload ELF to /tmp).
+# Image: ap0_patched_v321.squashfs (154,021,888 B = 0x92e3000, crc32 10e50fc0)
+# Only ap0 volume data written; layout/vtbl/other volumes untouched.
+# Restore = ap0_restore.scr (factory).
+
+echo OPENTV-AP0WRITE321: begin (ARMED, ap0 <- v3.2.1 shim@/vendor)
+
+mw.l 0x5000000 0x5a5a5a5a
+fatwrite usb 0:auto 0x5000000 ap0v321_began.bin 4
+
+fatload usb 0:auto 0x3300000 ap0_patched_v321.squashfs
+ubi part fs0
+ubi write 0x3300000 ap0 0x92e3000
+
+mw.l 0x3300000 0x00000000 1
+ubi read 0x3300000 ap0 0x92e3000
+if crc32 0x3300000 0x92e3000 10e50fc0; then
+    echo OPENTV-AP0WRITE321: VERIFIED (crc32 10e50fc0)
+    mw.l 0x3300000 0x4b4f564e
+    fatwrite usb 0:auto 0x3300000 v321_ap0_ok.bin 4
+else
+    echo OPENTV-AP0WRITE321: *** CRC MISMATCH - RUN ap0_restore ***
+    mw.l 0x3300000 0x4641494c
+    fatwrite usb 0:auto 0x3300000 v321_ap0_FAIL.bin 4
+fi
+
+echo OPENTV-AP0WRITE321: done
+% <- this is end of file symbol

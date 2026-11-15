@@ -1,0 +1,47 @@
+# OpenTV ap0 WRITE script  --  *** ARMED: THIS WRITES TV FLASH ***
+#
+# Track-C: overwrite the ap0 volume (the /vendor SquashFS that hosts
+# run_aurora.sh) with ap0_patched.squashfs = factory ap0 + ONE added
+# line in run_aurora.sh:
+#     insmod /vendor/modules/ntkethmac.ko
+# (without it, the remote.txt path has no eth0 -> black-screen loop;
+# see ARCHITECTURE.md "Wired network bring-up" round 4).
+#
+# Only the ap0 VOLUME DATA is written (ubi write on a dynamic volume:
+# layout headers, volume table, fs0/ap1 volumes and everything signed
+# or boot-critical are untouched). Restore = ap0_restore.scr, which
+# writes the exact factory ap0 image back the same way.
+#
+# Deploy ONLY as <FAT32 stick root>/kylo_usb_update.scr on explicit go,
+# with ap0_patched.squashfs (154,017,792 B) and ap0_factory.squashfs
+# (154,148,864 B) both in the stick root. Boot TV holding OK; the
+# write + read-back verify takes ~1-2 min (stick LED activity); power
+# off only after the LED is idle and the marker file below is written.
+#
+# RAM: 0x3300000 + 0x92e2000 = 0xc5e2000 (~208 MB) — same region the
+# stock updater uses (it loads 195 MB at 0x4580020), DRAM is larger.
+
+echo OPENTV-AP0WRITE: begin (ARMED, ap0 <- patched)
+
+# 1) load the patched image from the FAT stick into RAM
+fatload usb 0:auto 0x3300000 ap0_patched.squashfs
+
+# 2) attach UBI on the fs0 mtd partition and update the ap0 volume
+ubi part fs0
+ubi write 0x3300000 ap0 0x92e2000
+
+# 3) verify: dirty RAM, read the whole volume back, CRC-compare
+mw.l 0x3300000 0x00000000 1
+ubi read 0x3300000 ap0 0x92e2000
+if crc32 0x3300000 0x92e2000 bab70164; then
+    echo OPENTV-AP0WRITE: VERIFIED (crc32 bab70164)
+    mw.l 0x3300000 0x4b4f564e
+    fatwrite usb 0:auto 0x3300000 ap0_write_ok.bin 4
+else
+    echo OPENTV-AP0WRITE: *** CRC MISMATCH - RUN ap0_restore ***
+    mw.l 0x3300000 0x4641494c
+    fatwrite usb 0:auto 0x3300000 ap0_write_FAIL.bin 4
+fi
+
+echo OPENTV-AP0WRITE: done
+% <- this is end of file symbol

@@ -1,0 +1,31 @@
+# OpenTV ap0 RESTORE script  --  *** ARMED: THIS WRITES TV FLASH ***
+#
+# Track-C restore: write the exact factory ap0 volume image (carved
+# from the MD30010 firmware zip = what the TV has been running) back
+# over the ap0 volume. Use this if the patched ap0 misbehaves, or to
+# end the experiment and return the OS partition to stock.
+#
+# /conf (remote.txt) is NOT touched by this script — it stays armed;
+# remove it separately via the Track-B conf restore if desired.
+
+echo OPENTV-AP0RESTORE: begin (ARMED, ap0 <- factory)
+
+fatload usb 0:auto 0x3300000 ap0_factory.squashfs
+
+ubi part fs0
+ubi write 0x3300000 ap0 0x9302000
+
+mw.l 0x3300000 0x00000000 1
+ubi read 0x3300000 ap0 0x9302000
+if crc32 0x3300000 0x9302000 98ec4c01; then
+    echo OPENTV-AP0RESTORE: VERIFIED (crc32 98ec4c01)
+    mw.l 0x3300000 0x4b4f564e
+    fatwrite usb 0:auto 0x3300000 ap0_restore_ok.bin 4
+else
+    echo OPENTV-AP0RESTORE: *** CRC MISMATCH ***
+    mw.l 0x3300000 0x4641494c
+    fatwrite usb 0:auto 0x3300000 ap0_restore_FAIL.bin 4
+fi
+
+echo OPENTV-AP0RESTORE: done
+% <- this is end of file symbol

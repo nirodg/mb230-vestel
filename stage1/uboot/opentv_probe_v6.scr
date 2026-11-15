@@ -1,0 +1,24 @@
+# OpenTV PROBE v6  --  read-only, no flash writes
+#
+# Purpose: read back /conf (= apdat0 volume) to fetch /conf/opentv_boot.log
+# written by ap0 patch v2.1's run_aurora.sh diagnostics block.
+# apdat0 = mtd13 @ 0xE340000 (fs0 @ 0x2040000 + 195 MiB), size 10 MiB.
+# Also re-reads the fs0 head 2 MiB (cheap, keeps the volume table fresh).
+# Writes dump files to the FAT stick root + a marker.
+
+echo OPENTV-PROBE v6: begin
+
+# marker: ran
+mw.l 0x3300000 0x4b4f564e
+fatwrite usb 0:auto 0x3300000 opentv_probe_ran.bin 4
+
+# dump /conf: apdat0 (10 MiB) -> stick
+nand read 0x3300000 0xe340000 0xa00000
+fatwrite usb 0:auto 0x3300000 dump_apdat0_v6.bin 0xa00000
+
+# dump fs0 head 2 MiB (volume table region) -> stick
+nand read 0x3300000 0x2040000 0x200000
+fatwrite usb 0:auto 0x3300000 dump_fs0_head.bin 0x200000
+
+echo OPENTV-PROBE v6: done
+% <- this is end of file symbol

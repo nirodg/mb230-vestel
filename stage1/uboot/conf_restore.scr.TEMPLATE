@@ -1,0 +1,24 @@
+# OpenTV /conf RESTORE script  --  *** ARMED: writes apdat0 only ***
+#
+# The recovery net. Writes the SAVED ORIGINAL apdat0 dump byte-for-byte
+# back over /conf, undoing conf_write. Raw nand erase+write of apdat0
+# (our dump is the raw partition image). Confined to apdat0 @0xe340000,
+# size 0xa00000 -- touches NO boot/signed partition, cannot brick.
+#
+# Markers (fatwrite back to the stick) prove execution without serial:
+#   restore_began.bin = update path triggered + fatwrite works
+#   restore_done.bin  = nand erase+write completed
+#
+# Deploy as kylo_usb_update.scr with the ORIGINAL dump_apdat0.bin on the
+# stick root. Boot HOLDING OK (same trigger as the write).
+
+echo OPENTV-RESTORE: begin
+mw.l 0x5000000 0x5a5a5a5a
+fatwrite usb 0:auto 0x5000000 restore_began.bin 4
+fatload usb 0:auto 0x3300000 dump_apdat0.bin
+nand erase 0xe340000 0xa00000
+nand write 0x3300000 0xe340000 0xa00000
+mw.l 0x5000000 0x44444444
+fatwrite usb 0:auto 0x5000000 restore_done.bin 4
+echo OPENTV-RESTORE: done
+%

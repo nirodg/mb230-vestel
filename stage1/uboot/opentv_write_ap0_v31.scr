@@ -1,0 +1,36 @@
+# OpenTV ap0 WRITE v3.1 -- *** ARMED: WRITES TV FLASH ***
+#
+# Fix: /conf appears noexec, so ap0 v3's "program=/conf/opentv_payload"
+# (direct execve) fails silently. v3.1 changes idtv launch to:
+#   program=/bin/sh
+#   args=/conf/opentv_payload
+# /bin/sh (on rootfs, exec-allowed) reads/interprets the script even
+# if /conf is noexec. Conf-side payload iterations remain fast.
+# Image: ap0_patched_v31.squashfs (154,017,792 B = 0x92e2000,
+#        crc32 c5cf6621). Same volume size as v3.
+# Only ap0 volume data written; layout/vtbl/other volumes untouched.
+# Restore = ap0_restore.scr (factory).
+
+echo OPENTV-AP0WRITE31: begin (ARMED, ap0 <- v3.1 sh-launcher)
+
+mw.l 0x5000000 0x5a5a5a5a
+fatwrite usb 0:auto 0x5000000 ap0v31_began.bin 4
+
+fatload usb 0:auto 0x3300000 ap0_patched_v31.squashfs
+ubi part fs0
+ubi write 0x3300000 ap0 0x92e2000
+
+mw.l 0x3300000 0x00000000 1
+ubi read 0x3300000 ap0 0x92e2000
+if crc32 0x3300000 0x92e2000 c5cf6621; then
+    echo OPENTV-AP0WRITE31: VERIFIED (crc32 c5cf6621)
+    mw.l 0x3300000 0x4b4f564e
+    fatwrite usb 0:auto 0x3300000 v31_ap0_ok.bin 4
+else
+    echo OPENTV-AP0WRITE31: *** CRC MISMATCH - RUN ap0_restore ***
+    mw.l 0x3300000 0x4641494c
+    fatwrite usb 0:auto 0x3300000 v31_ap0_FAIL.bin 4
+fi
+
+echo OPENTV-AP0WRITE31: done
+% <- this is end of file symbol

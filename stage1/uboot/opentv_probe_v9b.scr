@@ -1,0 +1,81 @@
+# OpenTV PROBE v9b  --  READ-ONLY, PURE DUMPS, ZERO `if` LINES.
+# No flash writes. fatwrite only dumps/markers to the USB stick.
+#
+# Why v9b exists (round 9 lesson): probe v9 ran exactly one step
+# (ker1 head dump, NVOK) and died at its FIRST `if crc32` line. v9's
+# ker1 reference was wrong-basis (package prefix without the 64-byte
+# uImage header; real head crc is f3f551c7), so the condition was
+# FALSE -- and every prior `if crc32` that ever ran on this U-Boot was
+# TRUE (v1/v2/v21 all completed with ok markers). Working hypothesis:
+# a FALSE if-condition aborts the whole script (else path unproven).
+# Fix: v9b contains no `if` at all. Every CRC comparison happens
+# PC-side on the dumps.
+#
+# Purpose (unchanged from v9): fingerprint live flash vs the Medion
+# package + earlier dumps to answer "did the TV's own update machinery
+# write flash on its own". Discriminators: nvt_sign, fs0(vol), ap1,
+# ker1. Re-checks: ap0 (v7), /conf + buffer head (v8), ker1 (v9).
+#
+# PC-side reference table:
+#   dump_ker1_head_v9b.bin  0x40000   expect f3f551c7  (== v9 dump; header+package gzip)
+#   dump_buffer_head_v9b.bin 0x200000 expect ed23b697  (== v8 head; "never written")
+#   dump_apdat0_v9b.bin     0xa00000 expect 988a9672  (== v8 /conf; + PC byte-diff)
+#   dump_ap0_prefix_v9b.bin 0x40000   expect 18def0da  (factory == v7 live)
+#   dump_nvt_sign_v9b.bin   0x3e000   expect 29d846a8  (package)
+#   dump_fs0_vol_v9b.bin    0x592000  expect 611b54a2  (package)
+#   dump_ap1_vol_v9b.bin    0x1a66000 expect 34d34070  (package)
+# Markers: opentv_probe9b_ran.bin / opentv_probe9b_done.bin (NVOK).
+# A missing dump = the script stopped at the step before it (the dump
+# file itself is the progress record; no per-step markers needed).
+# RAM is zero-filled before EVERY read: all-zeros tail/dump = failed
+# or short read, not stale RAM.
+# Order: ALL raw `nand read`s FIRST, `ubi part fs0` only after
+# (v7 lesson); smallest first so a cut-short session banks the most.
+
+echo OPENTV-PROBE9B: begin
+
+mw.l 0x3300000 0x4b4f564e
+fatwrite usb 0:auto 0x3300000 opentv_probe9b_ran.bin 4
+
+echo V9B: ker1 head raw 0x1440000
+mw.l 0x3300000 0x00000000 0x10000
+nand read 0x3300000 0x1440000 0x40000
+fatwrite usb 0:auto 0x3300000 dump_ker1_head_v9b.bin 0x40000
+
+echo V9B: buffer head raw 0xed40000
+mw.l 0x3300000 0x00000000 0x80000
+nand read 0x3300000 0xed40000 0x200000
+fatwrite usb 0:auto 0x3300000 dump_buffer_head_v9b.bin 0x200000
+
+echo V9B: conf raw 0xe340000
+mw.l 0x3300000 0x00000000 0x280000
+nand read 0x3300000 0xe340000 0xa00000
+fatwrite usb 0:auto 0x3300000 dump_apdat0_v9b.bin 0xa00000
+
+echo V9B: raw reads done, attaching fs0 UBI
+ubi part fs0
+
+echo V9B: ap0 volume prefix
+mw.l 0x3300000 0x00000000 0x10000
+ubi read 0x3300000 ap0 0x40000
+fatwrite usb 0:auto 0x3300000 dump_ap0_prefix_v9b.bin 0x40000
+
+echo V9B: nvt_sign volume full
+mw.l 0x3300000 0x00000000 0xf800
+ubi read 0x3300000 nvt_sign 0x3e000
+fatwrite usb 0:auto 0x3300000 dump_nvt_sign_v9b.bin 0x3e000
+
+echo V9B: fs0 volume full
+mw.l 0x3300000 0x00000000 0x164800
+ubi read 0x3300000 fs0 0x592000
+fatwrite usb 0:auto 0x3300000 dump_fs0_vol_v9b.bin 0x592000
+
+echo V9B: ap1 volume full
+mw.l 0x3300000 0x00000000 0x699800
+ubi read 0x3300000 ap1 0x1a66000
+fatwrite usb 0:auto 0x3300000 dump_ap1_vol_v9b.bin 0x1a66000
+
+echo OPENTV-PROBE9B: done
+mw.l 0x3300000 0x4b4f564e
+fatwrite usb 0:auto 0x3300000 opentv_probe9b_done.bin 4
+% <- this is end of file symbol

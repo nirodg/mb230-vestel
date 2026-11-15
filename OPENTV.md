@@ -1,0 +1,245 @@
+# OpenTV — Plan / Spec
+
+An open-source, lightweight Linux TV experience for the Vestel MB230
+(Novatek NT72671). Reuse the proprietary driver/middleware `.so` blobs
+**as-is** (no decompilation); build our own userland and UI on top.
+Evidence basis: `ARCHITECTURE.md` (MD30010 static analysis).
+
+## Why not Android
+32-bit ARMv7 (Android dropped 32-bit after 11), no public NT72671
+BSP/HAL, binary-only drivers tied to Linux 4.9, ~800 MB RAM, and DRM
+signing that custom builds lose. Not viable — go custom Linux instead.
+
+## Hard constraint
+Secure boot + `nvt_sign` + proprietary XBOOT ⇒ we **cannot** boot our
+own kernel/bootloader without Novatek signing keys. So "live boot" means
+riding the **stock signed kernel + rootfs**, then taking over userland —
+not replacing the boot chain.
+
+## Stage 1 — Live PoC (zero writes to the TV)
+Boot stock firmware, then hijack the factory **"run AP from USB"** path
+(`/usr/script/startup.sh` → `/media/sda[1]/board/run.sh`) to launch our
+own launcher instead of `aurora.elf`. Keep `/vendor` + `/vendor2`
+mounted and reuse proprietary libs via `LD_LIBRARY_PATH`/`dlopen`.
+Fallback/dev channel: the `/conf/remote.txt` gdbserver+CIFS path.
+Goal: our process draws to the framebuffer/Mali and takes remote input,
+on hardware, reversibly. Success = **any** sign of our userland owning the screen with nothing
+written to NAND: a framebuffer picture (T0), a shell/lightweight desktop
+on the panel (T1), or the GLES launcher (T2). See `stage1/`.
+
+## Stage 2 — Minimal usable system
+Map the reusable surface: display/compositor (`fb*`, `mali0`, `ndppq`),
+input (remote/CEC), audio, tuner/HDMI — which `.so`s + ioctl/char-dev
+contracts each needs, treated as black boxes. Build a thin Buildroot/
+Yocto userland (or overlay on the stock rootfs) that boots to a simple
+launcher reusing those blobs. Decide: USB-run only, or a signed-image
+route if keys/exploit ever surface.
+
+## Stage 2 — code-execution surface (MAPPED 2026-11-12)
+
+How to make the stock, secure-booted firmware launch **our** binary with
+the GPU/middleware already up — without touching any signed partition.
+From the live `/vendor/run.sh` + `run_aurora.sh` and the `/conf` dump.
+
+**Firmware-run hooks (each gated by a WRITABLE file):**
+
+| Hook file (writable) | Effect when present |
+|----------------------|---------------------|
+| `/conf/remote.txt` (`isgdb:ip:user:pass`) | `run_aurora.sh` brings up eth0 (MAC `D4:E2:CC:EC:45:E9`), DHCP, `insmod cifs.ko`, mounts `//ip/mb230cifs`, runs **`gdbserver :2345 $REMOTELF/aurora.elf`** = our ELF served from a PC. Best for dev iteration. |
+| `/conf/run_with_dwelf` + `/buffer/aurora.elf` | `appmgr` uses `nvt.app.dwelf.ini` and runs **`/buffer/aurora.elf`** (our ELF from the writable buffer volume). |
+| `/conf/remote_nfs.txt` + `/conf/mac.txt` | starts `telnetd` (network shell). |
+
+(`RUN_SHELL` is hardcoded 0 in the read-only `/vendor/run.sh`; not usable.)
+
+**Write channels to those `/conf` / `/buffer` files:**
+
+| Channel | Can place a hook file? | Risk |
+|---------|------------------------|------|
+| Service-menu USB upload (`MENU 4725`) | **No** — fixed whitelist (`hwprofile/swprofile/PCF/PQF/ptf/AQ/sound`), config only, no arbitrary names/exec | none |
+| U-Boot `ubi write` (our confirmed `.scr` channel) | **Yes, whole-volume only** — U-Boot here has `ubifsload`/`ubifsls` but **no `ubifswrite`**, so a single file can't be inserted; the whole `apdat0`/`buffer` volume must be rewritten | bounded (see below) |
+| A Linux shell | Yes | n/a — we don't have one yet (chicken-and-egg) |
+
+**Plan (the reversible-where-possible route to the launcher):**
+1. Build our launcher as `aurora.elf` (ARM, links stock `libmali` — reuse
+   the Stage-1 T2 launcher; glibc 2.23).
+2. Target `/conf/remote.txt` (dev-friendly: the ELF is served over CIFS
+   from a PC, so iterating the binary needs no reflash).
+3. **Write primitive (the risk step):** rebuild `/conf` as *exactly the
+   current dump + a tiny `remote.txt`* (geometry: PEB 256 KiB, LEB
+   248 KiB, vol `apdat0` id 0 dynamic; `mkfs.ubifs`+`ubinize`), then
+   `ubi write` it via a U-Boot `.scr`. `apdat0` is a **writable data**
+   volume (runtime-written by the app ⇒ not vhash-signed), so this does
+   **not** defeat secure boot and **cannot brick the boot chain**; worst
+   case `/conf` resets to factory. Reversible by writing our saved dump
+   back. This is the first real TV flash write — gated on explicit go.
+4. Normal boot → `run.sh` sees `remote.txt` → runs our `aurora.elf` with
+   the full GPU/middleware env. OpenTV launcher lives.
+
+For the CyanogenMod-style port, this generalises: each device = find a
+writable volume + a firmware-run hook + a volume-write primitive.
+
+**Recovery net (why the risk step is bounded).** The OK-held update entry
+lives in **U-Boot**, which runs *before* Linux, the app, and the `/conf`
+mount, and sits in a **signed partition the plan never writes**. So a
+broken `aurora.elf` or a corrupt/half-written `/conf` is all downstream:
+power-cycle + hold OK always re-enters the USB update path, from which a
+raw `nand write` of the **saved original `apdat0` dump** restores `/conf`
+byte-for-byte (`stage1/uboot/conf_restore.scr.TEMPLATE`). Net holds only
+while every write stays confined to `apdat0` (never xboot/ddrcfg/secos/
+uboot/fdt/ker/fs0). Prepare the restore stick **before** the first write.
+Worst case even without restoring is a `/conf` factory-reset (settings
+loss), not a brick. (Unverified on hardware: the exact `ubi write` forward
+sequence and whether the firmware auto-reinitialises a bad `/conf` —
+confirm before relying on them.)
+
+## Stage 3 — "OpenTV" UI
+A proper launcher/compositor (Android-TV / Apple-TV feel): apps grid,
+settings, input switching, media playback via reused codecs. Own design,
+own code; proprietary blobs stay as leaf drivers behind our own API
+shims.
+
+## Architecture: portable core + device porting layer (CyanogenMod model)
+Split OpenTV into (a) a **device-independent core** (compositor, launcher,
+UI, app model) written against our **own stable internal APIs**, and
+(b) a per-device **porting layer** that implements those APIs by wrapping
+the proprietary blobs (`libmali` for GL, UART-IR for input, and later
+tuner/audio/HDMI/DRM). Porting to a new TV = rewrite only layer (b),
+exactly like CyanogenMod/LineageOS device trees + vendor blobs. The core
+builds and runs on host/Mesa; the MB230 porting layer binds the stock
+`.so`s on the TV.
+
+## "Bootable USB" — what's actually achievable
+Secure boot + XBOOT mean **no custom kernel from USB** (not a PC-style
+live-USB). The deliverable is a FAT32 stick whose `board/run.sh` the
+**stock firmware auto-runs** after its signed kernel/rootfs boot — our
+userland takes over, reusing the already-loaded GPU. See `stage1/` for
+the loader, the GLES2 PoC launcher, and the stick layout. Reversible; no
+reflash.
+
+## Licensing & vendor blobs (BYO — non-negotiable)
+OpenTV is a reusable, manufacturer-agnostic base. This repo contains
+**only our original code**. We **never** vendor, commit, redistribute, or
+decompile proprietary device libraries — producing or shipping those is
+not our job. A porter **brings their own** TV's libraries (here:
+`libmali.so`, UART-IR, tuner/audio/DRM blobs), which stay on-device and
+are reused in place at runtime. Build sysroots, `stocklibs/`, and any
+`*.so` are git-ignored so a vendor blob can't be committed by accident.
+This keeps the project clean of third-party copyright.
+
+## Principles
+- No writes to flash until a stage explicitly needs it (Stage 1–2 stay
+  USB-only / reversible).
+- Proprietary blobs are **used, never decompiled**: wrap them behind our
+  own interfaces; record each lib's observed contract, not its internals.
+- Don't touch secure boot, SECOS, or the signed `nvt_sign` volume.
+- DRM (PlayReady/Marlin) is out of scope — expect no protected playback.
+
+## Stage 1 feasibility — graphics (RESOLVED: GO)
+Static check of the stock `ap0` libs:
+- `libmali.so` (8.6 MB) is **self-contained**: it needs only
+  libc/libdl/libpthread/librt/libm/libstdc++/libgcc — **no NVT
+  middleware**. Exports the full **EGL + GLES** (1131 funcs). So a small
+  custom app can reuse the GPU **without** dragging in `aurora.elf`'s
+  135-lib monolith or DirectFB.
+- `libEGL.so` / `libGLESv2.so` are 3-function **shim wrappers** over
+  `libmali.so` → the GUI just links `-lEGL -lGLESv2`.
+- Mali build config (from the blob): `winsys=['fbdev']`,
+  `wayland_backend=fbdev`, `os=linux`, `platform_config=nvt`,
+  `gles32=1`, `vulkan=0`, `gpu=tSIx`, `hwver=r1p1`, dma-buf on.
+  → **Native surface = EGL on fbdev** (`/dev/fb0`), **GLES2/3 (up to
+  3.2), no Vulkan**. Window handle is a framebuffer/`fbdev_window`, not
+  GBM/X11/Wayland.
+- Device nodes needed: `/dev/fb0`, `/dev/mali`, `/dev/ntkgpu` — all
+  provided by stock `mali.ko` + `ntkndp*.ko`, which load during stock
+  boot **before** our USB userland runs. Our live app inherits a ready
+  GPU.
+
+**Hand-off to the GUI session:** target **EGL + GLES2/GLES3 over fbdev**
+(single fullscreen surface, 1920×1080 — see `PANEL_WIDTH/HEIGHT` in
+`run.sh`). Anything that compiles to GLES2/3 on a raw EGL/fbdev context
+(e.g. a C/C++ or Rust compositor, Skia-GL, LVGL-GL) will port; avoid
+Vulkan and avoid assuming a window system.
+
+> Note: `run.sh` runs `aurora.elf` with a large env block (FRAMEBUFFER,
+> MALI_NOCLEAR, OSD plane sizes, GStreamer paths). Graphics need only the
+> framebuffer + Mali nodes; the rest is TV middleware we add later.
+
+## Stage 1 — input & loader (analyzed)
+- **Remote = IR over UART**, not evdev. Decoded in userspace by DirectFB
+  `libdirectfb_nvt_uart_ir.so`; app uses `/dev/ttyS0`/`/dev/ttyS2` +
+  `/dev/ntgpio`; scancode→key maps in `ice_keymapping_db.xml` /
+  `vk_keymapping_db.xml`. No kernel input module → reusable from our own
+  process (reuse that driver, or read the UART tty + apply the keymap).
+- **Mali fbdev native window:** `EGLNativeDisplayType=EGL_DEFAULT_DISPLAY`
+  (Mali opens `FRAMEBUFFER=/dev/fb0`); `EGLNativeWindowType` → pointer to
+  `struct fbdev_window { unsigned short width; unsigned short height; }`.
+  Confirm at first bring-up.
+- **Loader skeleton:** `stage1/board/run.sh` — reversible USB loader
+  (reuses stock `/vendor/lib` read-only via `LD_LIBRARY_PATH`, sets the
+  minimal Mali env, execs `opentv_launcher`). Writes nothing to NAND.
+
+## USB entry points — two distinct mechanisms
+
+The TV exposes **two unrelated USB paths**. Don't conflate them.
+
+**1. U‑Boot auto‑update script (CONFIRMED executing on hardware).**
+Powering on **holding `OK`** makes U‑Boot source a plain‑text
+`kylo_usb_update.scr` from the stick root (`USB AUTO UPDATE!!`). The
+script is **not signature‑checked** — a custom `.scr` runs. Verified with
+a non‑destructive probe that used `fatwrite` to write files back to the
+stick (see `stage1/uboot/opentv_probe.scr`, `ARCHITECTURE.md`). **Scope:
+read‑only.** Boot‑time verification (`verify=y`, vhash, `nvt_sign`,
+`bootsecure`) still blocks booting an unsigned image, and the stock `.scr`
+is a destructive full reflash that erases XBOOT/U‑Boot/SECOS. So this
+channel is a **diagnostics / flash‑dump tool** (`nand read`/`sf read` →
+`fatwrite`), **not** a route to run OpenTV. Treat any flashing `.scr` as
+brick‑risk and out of scope.
+
+**2. Linux "Run AP from USB" (the Stage‑1 route for OpenTV).**
+After the signed kernel + rootfs boot, `startup.sh` runs
+`/media/sda[1]/board/run.sh`. This runs **our userland with the GPU
+already up** — the real OpenTV path. **Gate (important):** `startup.sh`
+takes this branch **only if `/vendor/run.sh` is absent**; on a normal
+boot `ap0` is mounted at `/vendor` and its `run.sh` exists, so the TV
+takes "Run AP from FLASH" and ignores the stick. This is the likely
+reason a first stick test produced no `opentv_stage1.log`. Reaching our
+`board/run.sh` on a stock unit therefore needs the USB branch to actually
+be taken — the open Stage‑1/2 problem to solve next (candidate levers,
+all still USB/reversible where possible: confirm the power‑cycle‑with‑
+stick timing, or the `/conf/remote.txt` gdbserver/CIFS dev path).
+
+**Live‑flash confirmation (2026‑11‑12, via the U‑Boot dump channel).**
+The kernel cmdline (`init=/init`, `root=/dev/ubiblock0_0` ro SquashFS,
+`rootflags=nvt_security`) sits in the **signed `fdt0`** — immutable
+without re‑signing, so there is no cmdline‑level entry. The one writable,
+reversible surface is **`/conf`** (apdat0, UBI/UBIFS): besides the TV
+profiles it holds **shell scripts the stock firmware executes on
+Wi‑Fi/P2P events** (`wifi/mtk_wifi_connectap_action.sh`,
+`wifi/p2papp_connected.sh`, `udhcpc-p2p.script`). `/conf` is writable via
+the service‑menu USB upload path (`RESEARCH.MD`) — **no reflash, no
+secure‑boot defeat**. That makes it the most promising Track‑B lever to
+reach our userland, and it generalises to the porting model: a new TV's
+port looks for its own writable config volume + firmware‑run hooks.
+(This unit currently has no `remote.txt` and an empty
+`disable_sh_command.txt`.)
+
+> For the CyanogenMod‑style porting model, mechanism **1** is a per‑device
+> **bring‑up/diagnostics** tool (dump this board's flash, env, panel/MAC
+> config non‑destructively); mechanism **2** is where the device
+> **porting layer** actually loads the portable OpenTV core. A new TV's
+> port re‑derives both: its signed‑update trigger (for safe dumps) and
+> its post‑boot "run AP" hook (to launch our userland).
+
+## Simulation without the TV (QEMU)
+GPU can't be emulated: `libmali.so` needs `/dev/mali`+`/dev/ntkgpu`
+(proprietary drivers on the real SoC). But EGL/GLES is a portable API —
+build the GUI on host/QEMU against **Mesa EGL/GLES** behind a thin
+platform shim; the same GLES code links stock `libmali.so` on the TV.
+~90% off-hardware; only final GPU/panel validation needs the TV (via USB
+or the network gdbserver/CIFS path — neither reflashes).
+
+## Open unknowns (resolve early)
+Can an unsigned USB userland actually `dlopen` the stock Mali/display
+libs outside `aurora.elf`'s environment? What init/env does
+`aurora.elf` rely on (via `run.sh`) that we must reproduce? Which
+char-dev/ioctl contracts are stable? These gate Stage 1.

@@ -1,0 +1,36 @@
+# OpenTV /conf WRITE v3.10 (v3.9 stock-runner + aggressive stdout/diag capture)
+# *** ARMED: WRITES TV FLASH ***
+#
+# v3.9: exec'd run_aurora.sh normal path (remote.txt hidden) for stock idtv launch
+# context; prior v3.6-v3.8 reached semaphore-done but aurora exited mid-startup
+# (PRIVSERVER.CB flood -> watchdog) and stdout capture didn't land. v3.10 keeps
+# v3.9 launch approach and adds aggressive diagnostics: frequent snapshots of
+# /tmp/stdout.all, /tmp/stdout, /tmp/stderr, tmp listing and ps to /conf for
+# post-mortem analysis of aurora's exit.
+# Goal: stable system + persistent root shell (:23) on a fully-live idtv.
+# Fresh session, apdat0 as the first and only UBI attach (proven).
+# Image: conf_v310.ubifs (3,809,280 B = 0x3a2000, crc32 1f037a60).
+
+echo OPENTV-CONFV310: begin (ARMED, conf <- conf_v310.ubifs liveness v310)
+
+mw.l 0x5000000 0x5a5a5a5a
+fatwrite usb 0:auto 0x5000000 confv310_began.bin 4
+
+fatload usb 0:auto 0x3300000 conf_v310.ubifs
+ubi part apdat0
+ubi write 0x3300000 apdat0 0x3a2000
+
+mw.l 0x3300000 0x00000000 1
+ubi read 0x3300000 apdat0 0x3a2000
+if crc32 0x3300000 0x3a2000 1f037a60; then
+    echo OPENTV-CONFV310: VERIFIED (crc32 1f037a60)
+    mw.l 0x3300000 0x4b4f564e
+    fatwrite usb 0:auto 0x3300000 v310_conf_ok.bin 4
+else
+    echo OPENTV-CONFV310: *** CRC MISMATCH ***
+    mw.l 0x3300000 0x4641494c
+    fatwrite usb 0:auto 0x3300000 v310_conf_FAIL.bin 4
+fi
+
+echo OPENTV-CONFV310: done
+% <- this is end of file symbol

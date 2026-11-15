@@ -580,7 +580,8 @@ SPI Flash Layout (from logs)
 Address	Purpose
 0x00000 – 0x80000	Bootloader (xboot)
 0x20000	EDID block
-0x23000	MAC / config block
+0x23000	MAC / config block (confirmed 2026‑11‑13, probe round 4:
+	holds the eth0 MAC as ASCII text, matches /conf/mac.txt)
 0x30000	Boot parameters
 0x40000	Kernel / firmware header
 0x63ff0	TV lifetime counter

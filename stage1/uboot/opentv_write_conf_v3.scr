@@ -1,0 +1,39 @@
+# OpenTV /conf WRITE v3 (conf-only)  --  *** ARMED: WRITES TV FLASH ***
+#
+# Round 11b: the combined v3 cycle wrote ap0 successfully (v3_ap0_ok.bin
+# = NVOK, full 154 MB read-back CRC verified) but the session stopped
+# before part 2 (no conf marker either way). This script redoes ONLY
+# part 2, in a fresh session, following the round-3/4 PROVEN flow:
+# apdat0 as the first and only UBI attach (no prior `ubi part fs0`).
+# ap0 v3 is already live on flash; its nvt.app.debug.ini program=
+# points to /conf/opentv_payload — which THIS write delivers. After
+# this cycle the payload runs as root (telnetd :23, route-based
+# internet block, ap0/nvt_sign fingerprint trap).
+# Image: conf_v3.ubifs (3,809,280 B = 0x3a2000, crc32 96f6bd55).
+# Markers: confv3_began.bin, then v3_conf_ok.bin (NVOK) on verify;
+# v3_conf_FAIL.bin on mismatch (unreachable if a false if aborts the
+# script — the missing marker is the signal).
+
+echo OPENTV-CONFV3: begin (ARMED, conf <- conf_v3.ubifs)
+
+mw.l 0x5000000 0x5a5a5a5a
+fatwrite usb 0:auto 0x5000000 confv3_began.bin 4
+
+fatload usb 0:auto 0x3300000 conf_v3.ubifs
+ubi part apdat0
+ubi write 0x3300000 apdat0 0x3a2000
+
+mw.l 0x3300000 0x00000000 1
+ubi read 0x3300000 apdat0 0x3a2000
+if crc32 0x3300000 0x3a2000 96f6bd55; then
+    echo OPENTV-CONFV3: VERIFIED (crc32 96f6bd55)
+    mw.l 0x3300000 0x4b4f564e
+    fatwrite usb 0:auto 0x3300000 v3_conf_ok.bin 4
+else
+    echo OPENTV-CONFV3: *** CRC MISMATCH ***
+    mw.l 0x3300000 0x4641494c
+    fatwrite usb 0:auto 0x3300000 v3_conf_FAIL.bin 4
+fi
+
+echo OPENTV-CONFV3: done
+% <- this is end of file symbol

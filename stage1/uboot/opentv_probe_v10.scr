@@ -1,0 +1,21 @@
+# OpenTV PROBE v10  --  READ-ONLY, conf-only dump.
+# No flash writes. fatwrite = dump/markers to the stick only.
+#
+# Purpose: after the verified v3 writes (ap0 v3 + conf v3, both NVOK),
+# the TV is off-network and telnet :23 is dead — the payload either
+# never ran or died before networking. Its first act is appending to
+# /conf/opentv_payload.log (persists on flash), plus it snapshots
+# appmgr's boot log and writes wget_test.log. One 10 MiB /conf dump
+# answers everything: did appmgr exec the payload, how far did it get,
+# and every command's exit code.
+
+echo OPENTV-PROBE10: begin
+
+mw.l 0x3300000 0x4b4f564e
+fatwrite usb 0:auto 0x3300000 opentv_probe10_ran.bin 4
+
+nand read 0x3300000 0xe340000 0xa00000
+fatwrite usb 0:auto 0x3300000 dump_apdat0_v10.bin 0xa00000
+
+echo OPENTV-PROBE10: done
+% <- this is end of file symbol

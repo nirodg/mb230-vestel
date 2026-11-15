@@ -1,0 +1,66 @@
+# Firmware images & TV dumps — large, proprietary, never commit
+*.zip
+*.bin
+*.scr
+!stage1/uboot/opentv_probe.scr
+!stage1/uboot/ap0_write.scr
+!stage1/uboot/ap0_restore.scr
+!stage1/uboot/ap0_write_v2.scr
+!stage1/uboot/ap0_write_v21.scr
+!stage1/uboot/opentv_probe_v6.scr
+!stage1/uboot/opentv_probe_v7.scr
+!stage1/uboot/opentv_probe_v7b.scr
+!stage1/uboot/opentv_probe_v8.scr
+!stage1/uboot/opentv_probe_v9.scr
+!stage1/uboot/opentv_probe_v9b.scr
+!stage1/uboot/opentv_write_v3.scr
+!stage1/uboot/opentv_write_conf_v3.scr
+!stage1/uboot/opentv_probe_v10.scr
+!stage1/uboot/opentv_write_conf_v32_diag.scr
+!stage1/uboot/opentv_write_ap0_v31.scr
+!stage1/uboot/opentv_write_conf_v33.scr
+!stage1/uboot/opentv_write_conf_v34.scr
+!stage1/uboot/opentv_write_conf_v35.scr
+!stage1/uboot/opentv_write_conf_v36.scr
+!stage1/uboot/opentv_write_conf_v37.scr
+!stage1/uboot/opentv_write_conf_v38.scr
+!stage1/uboot/opentv_write_conf_v39.scr
+!stage1/uboot/opentv_write_conf_v310.scr
+!stage1/uboot/opentv_write_conf_v311.scr
+!stage1/uboot/opentv_write_conf_v312.scr
+!stage1/uboot/opentv_write_ap0_v32.scr
+!stage1/uboot/opentv_write_ap0_v321.scr
+*.img
+kylo_usb_update.*
+MD30010_*
+dump/
+dumps/
+
+# Device secrets that may appear in dumps
+*.key
+*_hwprofile.bin
+*_swprofile.bin
+etc/shadow
+
+# Python
+__pycache__/
+*.pyc
+
+# Local scratch / build artifacts
+*.log
+device_research.log
+stage1/board/opentv_launcher
+stage1/board/opentv_fbshow
+stage1/launcher/opentv_launcher
+stage1/launcher/opentv_fbshow
+*.o
+
+# BYO vendor blobs — NEVER commit proprietary device libraries.
+# OpenTV ships only original code; porters supply their own TV's libs.
+*.so
+*.so.*
+stage1/launcher/stocklibs/
+**/stocklibs/
+vendor-blobs/
+stage1/launcher/aurora.elf
+stage1/launcher/opentv_payload
