@@ -55,6 +55,10 @@ stage1/launcher/opentv_launcher
 stage1/launcher/opentv_fbshow
 *.o
 
+# Backup folders (e.g. old USB data dumps/images copied locally)
+backup_old_data/
+**/backup_old_data/
+
 # BYO vendor blobs — NEVER commit proprietary device libraries.
 # OpenTV ships only original code; porters supply their own TV's libs.
 *.so
