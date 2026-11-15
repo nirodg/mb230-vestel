@@ -1,12 +1,15 @@
-# aurora.elf (stock MB230 idtv app) — static analysis
+# aurora.elf (stock MB230 idtv app) — analysis
 
 **Target:** `com.nvt.idtv/aurora.elf` (stock main TV application on Vestel/Novatek MB230 "Kylo")
 **Analyzed binary:** extracted from `mb230-full-backup/mtd12_fs0.bin` → UBI volume `ap0` (SquashFS) → `com.nvt.idtv/aurora.elf`
 **Local copy:** `/tmp/opencode/rea-targets/aurora_stock.elf` (working extraction for this session)
 **Analysis date:** 2026-11-15
-**Methods:** `file`, `readelf` (headers/sections/segments/dynamic/NEEDED), and `strings -n 6` (197,142 strings) + targeted searches. **REA MCP deep analysis (decompilation/pseudocode/callgraph) was not available in this session:** `open_binary` reached Hopper but timed out waiting for bridge readiness (`provider_timeout`, launcher showed plugin scan only; may require GUI/license/loader interaction), and `provider_id="ghidra"` was unavailable (`GHIDRA_INSTALL_DIR` not set). Findings below are therefore **static/observational** (binary metadata + strings/imports + cross-references to existing repo evidence in `ARCHITECTURE.md`, `RESEARCH.MD`, `OPENTV.md`) and explicitly distinguish inference from decompiled fact.
 
-> Scope: this documents what the shipped `aurora.elf` appears to do and how it is structured, to inform safe modification of the stock image (custom UI/apps/mods). It does **not** claim complete decompiled truth where control/data flow was not recovered.
+**Methods:**
+- **Static:** `file`, `readelf` (headers/sections/segments/dynamic/NEEDED), and `strings -n 6` (197,142 strings) + targeted searches, cross-referenced with `ARCHITECTURE.md`, `RESEARCH.MD`, `OPENTV.md`.
+- **Ghidra headless decode (completed):** Ghidra **12.1.4 PUBLIC** (`analyzeHeadless`, ARM:LE:32:v8) auto-analysis of the extracted ELF (~90,606 functions recovered) with scripted export of function inventory, key strings/xrefs, and targeted decompilation for mod-relevant subsystems. See **[`aurora-re/GHIDRA_DECODE.md`](aurora-re/GHIDRA_DECODE.md)** for function-level evidence (addresses, callers/callees, decompiled logic) covering lifecycle/suspend-resume/liveness, input/key dispatch, USB service operations (`PerformUSBOperations`), Callisto/NDFW OAD update flow, profiles/service/PQ, and modding implications. REA MCP provider decomp was not available to the live session; decode was performed via Ghidra headless directly.
+
+> Scope: documents what the shipped `aurora.elf` does and how it is structured to inform safe modification of the stock image (custom UI/apps/mods, new app entries). Decompiled C is Ghidra’s reconstruction of stripped code (approximate types/names) but grounded in analyzed control/data flow and call/string evidence. No confidential material included.
 
 ## 1. Binary identity
 
@@ -141,21 +144,25 @@ This is a **static assessment** to guide safe work; validate each change on hard
 - **DRM/keys/credentials/ROFIX/HDCP/MAC:** high sensitivity; avoid modification/exfiltration.
 - **Reversibility:** keep full NAND/SPI backups (done for MTDs except unreadable `mtd5 misc` in this session; SPI NOR backup still pending). Prefer `/conf`-scoped, reversible experiments first.
 
-## 7. Gaps and recommended next RE steps
+## 7. Ghidra decode status and remaining work
 
-- **Decompilation/callgraph/data-flow:** retry REA with a working provider (Hopper GUI readiness/license resolved, or configure `GHIDRA_INSTALL_DIR` for Ghidra 12.1.x, or IDA MCP) to obtain function-level pseudocode, xrefs, and structures — essential for "decode fully" and safe patching.
-- **Targeted areas to reverse:** (a) main/init and appmgr/privserver handshake, (b) input dispatch (IR key → action) and menu/launcher flow for "new app entries", (c) USB `PerformUSBOperations`/profile handling, (d) update/OAD state machine (`fto`, `nvt_trigger_update`, `oadWriteFlashAndReboot`), (e) service menu/factory gates, (f) browser/Cobalt/portal integration points.
-- **Correlate with filesystem:** inspect `/vendor/com.nvt.idtv/` (scripts, configs, resources), `/vendor/data/nvt.app*.ini`, and `/conf` runtime state on-device to map strings to actual behavior.
-- **Dynamic observation (authorized/controlled):** tracing/logging, `strace`-like instrumentation where available, or gdbserver/CIFS debug hooks (documented) can validate hypotheses that static analysis cannot.
-- **Evidence hygiene:** when decompilation becomes available, attach Evidence IDs/procedure addresses to each claim and separate observed vs inferred behavior.
+**Completed (see [`aurora-re/GHIDRA_DECODE.md`](aurora-re/GHIDRA_DECODE.md)):** headless Ghidra auto-analysis and targeted decompilation for key mod-relevant paths with addresses/call graphs — `idtvSuspend/Resume` (STR/liveness coupling), `ice_KeyEventDispatchThread` (UART key read, long-press/repeat/APM context, dispatch and USB-op trigger path), `PerformUSBOperations` and helpers (`NonVolatile_CopyUSB`, `DEV_MTD_UpdateImage`, ROFIX/tcon/PQ/conf flows), Callisto/NDFW update chain (`ICE_CallistoWriteBytesToFlash`, `upgradeSoftwareFromUSB`, `CallistoActivateNewCode` → `nvt_trigger_update` reboot trigger, USB-upgrade start wrappers), service/PQ/profile reporting (`ICE_ServiceGetPQandAQFileNames`), and subsystem mapping.
+
+**Still valuable for deeper “new app entry” / full custom UI mods:**
+- **Input→action/menu/launcher mapping:** fully resolve `ice_KeyEventDispatchThread` dispatch tables/handlers and focus/APM transitions to concrete UI/app actions.
+- **App-manager/UI framework (Nebula/EASI/Novo/CA*):** decompile registration/launch/menu-entry points to identify where stock app entries are defined and how to add/swap them.
+- **`PerformUSBOperations` rodata:** resolve all string/table indirections to a precise USB file manifest and per-file handling.
+- **Init/main and IPC handshake:** trace binary entry/startup to appmgr/privserver/semaphore/watchdog contract details.
+- **On-device correlation:** map findings to `/vendor/com.nvt.idtv/`, `nvt.app*.ini`, and `/conf` runtime state; validate hypotheses via controlled, reversible experiments (telnet/sidecars, `/conf` hooks) with backups.
 
 ## 8. Artifacts produced
 
 - Extracted binary: `/tmp/opencode/rea-targets/aurora_stock.elf` (from `mb230-full-backup/mtd12_fs0.bin`)
 - Strings corpus: `/tmp/opencode/rea-targets/aurora_strings.txt` (197,142 lines)
-- This report: `AURORA_ELF_ANALYSIS.md`
-- REA session: opened/closed (no provider analysis results captured due to provider unavailability)
+- Static report: `AURORA_ELF_ANALYSIS.md`
+- **Ghidra decode report:** `aurora-re/GHIDRA_DECODE.md` (function-level evidence; Ghidra 12.1.4 headless, project/exports generated locally under `/tmp/opencode/ghidra-proj/` and `/tmp/opencode/ghidra-out/`, not committed)
+- REA session: used for earlier attempts; live REA MCP in that session lacked a ready Ghidra/Hopper provider, so decode was completed via direct headless Ghidra.
 
 ## 9. Summary
 
-`aurora.elf` is the **large, monolithic, stripped ARMv7 hard-float idtv application** at the center of the MB230 stack, dynamically bound to Novatek platform HALs (NDAL/DirectFB/Mali/GStreamer), DRM/HDCP/TEE components, networking, browser/OTT integrations, and AVS/Alexa libraries. Static evidence (ELF + extensive strings) maps clear responsibilities: lifecycle/liveness IPC with appmgr/privserver, rich `/conf`-driven configuration (profiles/PQ/EDID/service/hotel/FTI), USB/service/profile/credential handling surfaces, OAD/software-update paths, IR/CEC/HDMI/input and media pipelines, and multi-app/portal/browser integrations. For "full custom" goals, the safest near-term path is leveraging **writable config/hooks and sidecar/custom apps under controlled liveness**, while full binary modification or native "new app entry" integration will require decompilation-grade RE (Hopper/Ghidra/IDA) of targeted subsystems plus careful, reversible on-device validation.
+`aurora.elf` is the **large, monolithic, stripped ARMv7 hard-float idtv application** at the center of the MB230 stack, dynamically bound to Novatek platform HALs (NDAL/DirectFB/Mali/GStreamer), DRM/HDCP/TEE components, networking, browser/OTT integrations, and AVS/Alexa libraries. Static evidence (ELF + strings) combined with **Ghidra headless decompilation** (`aurora-re/GHIDRA_DECODE.md`) now documents key control flows with function-level evidence: suspend/resume/liveness coupling, centralized UART key dispatch (and privileged triggers such as USB operations), detailed USB service operations (`PerformUSBOperations` and helpers touching profiles/PQ/configs/logs/MTD/ROFIX/tcon), and the Callisto/NDFW USB-upgrade/OAD activation path (including `nvt_trigger_update` reboot). For "full custom" goals, the safest near-term path remains **writable config/hooks and sidecar/custom apps under controlled liveness** with reversible backups; native “new app entry” integration and deeper UI/framework mods should build on the identified Nebula/EASI/APM/dispatch targets for further focused RE and careful on-device validation.
