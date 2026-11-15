@@ -19,6 +19,7 @@ Not to mention the HDMI ports sometimes works sometimes doesn't.
 - [RESEARCH.MD](RESEARCH.MD) A full overview with the finding during my investigation (hint: 🔑 gold mine )
 - [ARCHITECTURE.MD](ARCHITECTURE.md) A detailed architecture spec based on my own analysis. Kudos to https://clixad.io/ for FREE LLM usage. 
 - 🚀 Downgrading info, see bellow!
+- 🔓 **Jailbreak / root shell via USB injection — see [mb230-usb-jailbreak](https://github.com/nirodg/mb230-usb-jailbreak)** (live proof: stock TV fully working + `telnet` root)
 
 ## Tools
 - [Vestel Profile Toolbox (TommyData)](https://www.bekozap.com/hacking-the-software-of-vestel-tv-7/) - tested and working, some hex values are not displayed, is an old app and my TV was released on 2019. I bet if I do some digging I could update the dictionary.ini to display new values.
@@ -72,6 +73,29 @@ Doing a quick Google search for "Medion MD 30010 FULL UPDATE EN" you'll find a z
 - You'll see the SW how it get's installed
 - Give it some time and you'll see a nice "Welcome" screen.
 - Do the setup as usual. 
+
+## 🔓 Jailbreak — root shell over USB injection (stock TV keeps working)
+
+**Status: achieved and verified on-device (Nov 2026).** The full step-by-step, reusable tooling and disclaimer live in the dedicated repo: **[mb230-usb-jailbreak](https://github.com/nirodg/mb230-usb-jailbreak)** (this repository is included there as a git submodule for the research docs).
+
+```
+/mtd_apexe/board # id
+uid=0(root) gid=0(root)
+/mtd_apexe/board # uname -a
+Linux (none) 4.9.118+ #2 SMP PREEMPT Wed Apr 1 14:12:52 CST 2020 armv7l GNU/Linux
+```
+
+TL;DR of how it works (all details + evidence in [`stage1/uboot/README.md`](stage1/uboot/README.md) and [`usb-injection/`](usb-injection/)):
+1. The service-menu USB update channel runs **unsigned U-Boot scripts** (`kylo_usb_update.scr`) from a FAT32 stick (hold **OK** at power-on) — this is a genuine vendor feature, and scripts can read/write UBI volumes with CRC verification.
+2. That channel is used to write two *userspace* volumes: the **ap0** root (adds a tiny shim that gets launched instead of `idtv`, then `exec`s the real `aurora.elf`) and the **conf** volume (our `opentv_payload` wrapper).
+3. The wrapper **restores the full stock environment** that the shim's `exec` drops (`BROWSER_DIR`, `WORKING_PATH`, ~80 exports from `run.sh`), mounts **`/dev/pts`**, starts `telnetd` on :23 (+ an `nc` fallback on :2323), and finally `exec`s the stock `aurora.elf` as `idtv`.
+4. Result: **aurora (the whole TV experience) runs normally** — tuner, menu, apps, watchdog all satisfied — while a background keeper keeps a persistent root shell alive.
+
+Key debugging insights (see the repo history for the full 3.6→3.12 saga):
+- `FATAL:base_paths_tvsdk.cc(72) browser_dir ... does not exist` + `The $HOME environment variable is not set` → aurora was running with an **empty environment** (SIGABRT → watchdog reboot ~every 20-25s, masquerading as a white screen/square).
+- busybox `telnetd` accepts TCP connections but resets them if **`/dev/pts` is not mounted** (stock init never mounts devpts).
+
+Bonus: with root, the TV exposes more usable pieces than expected — busybox `fbsplash` (direct framebuffer draw on `/dev/fb0..2`), a standalone **Cobalt** browser that accepts `--url=file://...` (arbitrary local HTML dialogs/apps, `--remote_debugging_port=9222` for DevTools), and a full **GStreamer** install (`gst-launch-1.0`, `nvt-mmplayer`).
 
 ## How to get in touch? 
 
