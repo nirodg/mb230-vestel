@@ -26,6 +26,7 @@
 !stage1/uboot/opentv_write_conf_v38.scr
 !stage1/uboot/opentv_write_conf_v39.scr
 !stage1/uboot/opentv_write_conf_v310.scr
+!stage1/uboot/opentv_write_conf_v311.scr
 !stage1/uboot/opentv_write_ap0_v32.scr
 !stage1/uboot/opentv_write_ap0_v321.scr
 *.img
