@@ -32,6 +32,9 @@ Armed, reversible, conf-only write (ap0 shim already in place):
 - `opentv_probe_v10.scr` — read-only `/conf` dump.
 - Repo refs: `stage1/uboot/README.md`, `ARCHITECTURE.md`, `RESEARCH.MD` — constraints, evidence, and findings.
 
+**SSH:** once a root shell is available (telnet/keeper), Dropbear SSH can be
+installed via [`../tools/dropbear/`](../tools/dropbear/README.md).
+
 ## Constraints / safety
 - U-Boot USB scripts run unsigned but the boot chain is verified; do **not** flash unsigned boot components. Prefer conf-only iterations; ap0 writes proven but always keep/verify restores.
 - Probes/writes: fresh session, `apdat0` as first/only UBI attach for conf; compare read-backs by CRC; scripts <8 KB, end with `%`.

@@ -1,4 +1,0 @@
-# Build artifacts (reproducible via build-docker.sh)
-/build-src/
-/dropbear-*.tar.bz2
-/dropbear-*.tar.bz2.asc

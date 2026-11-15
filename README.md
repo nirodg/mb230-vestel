@@ -26,6 +26,9 @@ Not to mention the HDMI ports sometimes works sometimes doesn't.
 ## Tools
 - [Vestel Profile Toolbox (TommyData)](https://www.bekozap.com/hacking-the-software-of-vestel-tv-7/) - tested and working, some hex values are not displayed, is an old app and my TV was released on 2019. I bet if I do some digging I could update the dictionary.ini to display new values.
 - [Hosbulduk-Profil-Analiz](https://github.com/Hosbulduk/Hosbulduk-Profil-Analiz/) - not tested, contains NEW HEX values, seems promissing!
+- **Dropbear SSH (MB230 port)** — static ARMv7 Dropbear server/client tools with
+  an on-TV installer (host keys in `/conf/dropbear`, root access helper, telnet
+  untouched): [`usb-injection/tools/dropbear/`](usb-injection/tools/dropbear/README.md).
 
 *Showcasing OLD vs NEW tool*
 ![Showcasing OLD vs NEW tool](asset_tools_showcase.png)
