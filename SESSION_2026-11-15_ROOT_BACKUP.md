@@ -76,10 +76,10 @@ dd if=/dev/mtd4 bs=65536 2>/tmp/dd.log | nc 192.168.0.100 9104; cat /tmp/dd.log
 - **Do not** write to flash partitions blindly; keep dumps offline/safe before experimentation.
 - SPI NOR (if separate from dumped MTDs) still needs identification and backup.
 - Backups stored at `/media/dorin/more_data/work/mb230-full-backup/` (verify/copied to additional safe/offline storage as needed).
-- After backup verification: proceed with `gui-hello-world/` takeover test (`/tmp/run-on-tv.sh` on TV) to validate framebuffer + remote input in our app (note: stopping aurora affects UI/watchdog; reboot recovers).
+- After backup verification: proceed with `usb-injection/tools/gui-hello-world/` takeover test (`/tmp/run-on-tv.sh` on TV) to validate framebuffer + remote input in our app (note: stopping aurora affects UI/watchdog; reboot recovers).
 
 ## Files created in repo this session (for reference)
-- `hello-world/` — telnet-uploadable "Hello World" app proof (Docker build, prebuilt binary, aliases/docs).
-- `gui-hello-world/` — framebuffer GUI "Hello World" + remote/input test (Docker build, prebuilt binary).
+- `usb-injection/tools/hello-world/` — telnet-uploadable "Hello World" app proof (Docker build, prebuilt binary, aliases/docs).
+- `usb-injection/tools/gui-hello-world/` — framebuffer GUI "Hello World" + remote/input test (Docker build, prebuilt binary).
 - `ir-sequence-poc/` — on-TV IR/remote raw monitor script.
 - `SESSION_2026-11-15_ROOT_BACKUP.md` — this note.

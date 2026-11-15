@@ -125,7 +125,7 @@ This is a **static assessment** to guide safe work; validate each change on hard
 ### 6.1 Lower-risk, practical levers (configuration & writable volumes)
 - **`/conf` (apdat0, rw UBIFS):** rich control/config surface (profiles PQ/PCF/ptf/AQ refs, service/hotel flags, browser/standalone flags, coredump/debug toggles, app env/data hooks). Service-menu USB operations already manage specific files; U-Boot volume-write channel can replace whole volume (see `stage1/uboot`, `ARCHITECTURE.md`, `OPENTV.md`) — **first real writes should be backed up and reversible**.
 - **`/buffer` (rw):** runtime/cache area (browser/cobalt caches, backups); useful for transient experiments.
-- **Telnet/root context (if present):** enables rapid iteration (upload/run custom binaries like `hello-world`, `gui-hello-world`) without flashing.
+- **Telnet/root context (if present):** enables rapid iteration (upload/run custom binaries like `usb-injection/tools/hello-world`, `usb-injection/tools/gui-hello-world`) without flashing.
 
 ### 6.2 App-entry / launch customization points (evidence-backed candidates)
 - **Script/ini-driven selection:** `run.sh`/`run_aurora.sh`, appmgr `nvt.app.debug.ini` flows, and `/conf` hooks (`remote.txt`, `run_with_dwelf` + `/buffer/aurora.elf` where applicable, `remote_nfs.txt`) are documented extension/debug paths. Feasibility on a given firmware must be confirmed against installed files.
