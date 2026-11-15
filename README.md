@@ -20,6 +20,7 @@ Not to mention the HDMI ports sometimes works sometimes doesn't.
 - [ARCHITECTURE.MD](ARCHITECTURE.md) A detailed architecture spec based on my own analysis. Kudos to https://clixad.io/ for FREE LLM usage. 
 - [usb-injection/tools/hello-world/](usb-injection/tools/hello-world/) ([repo](https://github.com/nirodg/mb230-hello-world)) — minimal custom app proof (ARM binary + source + Docker build script) that can be uploaded and run directly via telnet once you have a root shell. Includes the first prebuilt `hello` binary.
 - [usb-injection/tools/gui-hello-world/](usb-injection/tools/gui-hello-world/) ([repo](https://github.com/nirodg/mb230-gui-hello-world)) — second test: framebuffer GUI "Hello World" app with on-screen button/status feedback for remote/input events (Docker-built static ARM binary, uploadable via telnet).
+- [usb-injection/tools/apt/](usb-injection/tools/apt/) ([upstream](https://salsa.debian.org/apt-team/apt)) — APT source tracked as a submodule, intended for building/porting full CLI package-management tooling for the TV (`armv7l`, Linux 4.9.x).
 - 🚀 Downgrading info, see bellow!
 - 🔓 **Jailbreak / root shell via USB injection — see [mb230-usb-jailbreak](https://github.com/nirodg/mb230-usb-jailbreak)** (live proof: stock TV fully working + `telnet` root)
 
@@ -29,6 +30,8 @@ Not to mention the HDMI ports sometimes works sometimes doesn't.
 - **Dropbear SSH (MB230 port)** — static ARMv7 Dropbear server/client tools with
   an on-TV installer (host keys in `/conf/dropbear`, root access helper, telnet
   untouched): [`usb-injection/tools/dropbear/`](usb-injection/tools/dropbear/README.md).
+- **APT (CLI package manager, in progress)** — upstream APT source for TV-side
+  package management work: [`usb-injection/tools/apt/`](usb-injection/tools/apt/).
 
 *Showcasing OLD vs NEW tool*
 ![Showcasing OLD vs NEW tool](asset_tools_showcase.png)
