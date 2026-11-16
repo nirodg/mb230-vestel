@@ -50,6 +50,24 @@ Release codes = press code + 2000 (0x7D0).
       (or a dedicated `KEYMAP.md`).
 - [ ] Add the reverse direction (key id → synthetic injection via `send_key`)
       so the tool can also *simulate* a remote button — useful for CI/scripts.
+- [ ] **Reverse the proprietary GPU stack for hardware rendering** — the Open TV
+      UI currently rasterises on the CPU (software, XRGB8888 into a DirectFB
+      surface). The SoC has a Novatek NVTGA GPU (DirectFB/Graphics: "Novatek
+      NVTGA GPU 1.0" + `libmali` GLES blobs in the vendor image). Goal: a
+      `kms-gles2`-style gateway backend that renders the UI through the vendor
+      GLES (GBM/EGL or DirectFB GL) so frames are composited on the GPU.
+      Sub-tasks:
+      - [ ] Inventory the vendor GL stack (`libmali.so`, `libEGL`/`libGLESv2`,
+            `/dev/ntkgpu`, DirectFB `gfxdrivers`) in `squash_ap0`.
+      - [ ] Determine the render path aurora uses (DirectFB GL surface? EGL on
+            DirectFB? raw ntkgpu ioctls?).
+      - [ ] Prototype an EGL-on-DirectFB / GLES context that blits the UI
+            texture, benchmark vs the CPU rasteriser.
+      - [ ] Implement `gw_display` GLES backend behind the same API
+            (`device.conf [display] backend = gles2`), keeping the CPU path as
+            fallback.
+      - [ ] No proprietary blobs may be *required* — keep CPU rendering the
+            default; GLES is an optional accelerator (Open TV design rule).
 
 ### Notes / constraints
 
