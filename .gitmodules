@@ -1,0 +1,3 @@
+[submodule "usb-injection/tools"]
+	path = usb-injection/tools
+	url = git@github.com:nirodg/mb230-tools.git

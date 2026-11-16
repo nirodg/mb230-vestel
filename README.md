@@ -18,12 +18,20 @@ Not to mention the HDMI ports sometimes works sometimes doesn't.
 - [mb230-inspector](mb230_inspector.py). A Python app to help you analyze the dump files extracted from your MB230 TV. **Remember, might not work and/or contain bugs**
 - [RESEARCH.MD](RESEARCH.MD) A full overview with the finding during my investigation (hint: 🔑 gold mine )
 - [ARCHITECTURE.MD](ARCHITECTURE.md) A detailed architecture spec based on my own analysis. Kudos to https://clixad.io/ for FREE LLM usage. 
+- [usb-injection/tools/hello-world/](usb-injection/tools/hello-world/) ([repo](https://github.com/nirodg/mb230-hello-world)) — minimal custom app proof (ARM binary + source + Docker build script) that can be uploaded and run directly via telnet once you have a root shell. Includes the first prebuilt `hello` binary.
+- [usb-injection/tools/gui-hello-world/](usb-injection/tools/gui-hello-world/) ([repo](https://github.com/nirodg/mb230-gui-hello-world)) — second test: framebuffer GUI "Hello World" app with on-screen button/status feedback for remote/input events (Docker-built static ARM binary, uploadable via telnet).
+- [usb-injection/tools/apt/](usb-injection/tools/apt/) ([repo](https://github.com/nirodg/mb230-apt), [upstream](https://salsa.debian.org/apt-team/apt)) — APT source tracked as a submodule, intended for building/porting full CLI package-management tooling for the TV (`armv7l`, Linux 4.9.x).
 - 🚀 Downgrading info, see bellow!
 - 🔓 **Jailbreak / root shell via USB injection — see [mb230-usb-jailbreak](https://github.com/nirodg/mb230-usb-jailbreak)** (live proof: stock TV fully working + `telnet` root)
 
 ## Tools
 - [Vestel Profile Toolbox (TommyData)](https://www.bekozap.com/hacking-the-software-of-vestel-tv-7/) - tested and working, some hex values are not displayed, is an old app and my TV was released on 2019. I bet if I do some digging I could update the dictionary.ini to display new values.
 - [Hosbulduk-Profil-Analiz](https://github.com/Hosbulduk/Hosbulduk-Profil-Analiz/) - not tested, contains NEW HEX values, seems promissing!
+- **Dropbear SSH (MB230 port)** — static ARMv7 Dropbear server/client tools with
+  an on-TV installer (host keys in `/conf/dropbear`, root access helper, telnet
+  untouched): [`usb-injection/tools/dropbear/`](usb-injection/tools/dropbear/README.md).
+- **APT (CLI package manager, in progress)** — upstream APT source for TV-side
+  package management work: [`usb-injection/tools/apt/`](usb-injection/tools/apt/).
 
 *Showcasing OLD vs NEW tool*
 ![Showcasing OLD vs NEW tool](asset_tools_showcase.png)

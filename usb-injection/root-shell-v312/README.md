@@ -23,6 +23,9 @@ Linux (none) 4.9.118+ #2 SMP PREEMPT Wed Apr 1 14:12:52 CST 2020 armv7l GNU/Linu
 - TV connects via WiFi (wlan0) to the LAN; recent IPs: `192.168.0.111` (also seen .177, .136 wired in earlier sessions). MAC `cc:d3:c1:9e:00:e1` (wlan) / `D4:E2:CC:EC:45:E9` (wired).
 - `telnet <tv-ip> 23` → root shell (`/bin/sh`, cwd `/mtd_apexe/board`). Port `2323` = nc fallback (one shot per connection).
 - Shell survives as long as the TV runs; keeper re-arms telnetd every ~3s.
+- **SSH (Dropbear):** a ported Dropbear server + on-TV installer is available at
+  [`../tools/dropbear/`](../tools/dropbear/README.md) (installs to `/conf/dropbear`,
+  keeps telnet available). Use it for proper SSH access once root shell is up.
 
 ## Conf write (v3.12) — the only USB step needed to reproduce
 | Item | Value |
